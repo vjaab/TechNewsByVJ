@@ -1,0 +1,7 @@
+requests
+schedule
+pytz
+feedparser
+beautifulsoup4
+python-dotenv
+google-genai
