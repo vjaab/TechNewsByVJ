@@ -238,12 +238,30 @@ def send_telegram_message(message):
     
     try:
         response = requests.post(url, json=payload, timeout=20)
+        start_time = datetime.now()
+        
         if response.status_code == 200:
-            print(f"✅ Message sent at {datetime.now()}")
+            print(f"✅ Message sent at {start_time}")
+            return True
         else:
-            print(f"❌ Telegram Send Failed: {response.text}")
+            print(f"❌ Telegram Send Failed (MarkdownV2): {response.text}")
+            
+            # Fallback: Send as plain text if formatting fails
+            if "can't parse entities" in response.text:
+                print("⚠️ Retrying as Plain Text (Formatting Error)...")
+                payload['parse_mode'] = None # Disable formatting
+                response = requests.post(url, json=payload, timeout=20)
+                if response.status_code == 200:
+                    print(f"✅ Fallback Message sent at {datetime.now()}")
+                    return True
+                else:
+                    print(f"❌ Fallback Failed: {response.text}")
+                    return False
+            return False
+            
     except Exception as e:
         print(f"⚠️ Telegram Connection Error: {e}")
+        return False
 
 def job():
     print(f"⏰ Starting scheduled job at {datetime.now()}...")
