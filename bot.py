@@ -126,6 +126,7 @@ def generate_digest(news_items):
         
         TASK:
         Create a "Good Morning" tech digest for a Telegram channel.
+        Do NOT include any introductory text like "Here is the digest". Output ONLY the formatted message.
         
         STRICT OUTPUT FORMAT (MarkdownV2):
         🌅 *GM! Tech News by VJ* — {today_str}
