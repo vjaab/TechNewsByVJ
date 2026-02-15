@@ -1,11 +1,52 @@
+# No changes to file content needed, just git commit.
+import sys
+import time
 import json
 import re
+import requests
+import schedule
+import feedparser
+import pytz
+import google.genai as genai
+from datetime import datetime
+from bs4 import BeautifulSoup
+from dotenv import load_dotenv
 
-# ... [Existing imports like os, sys, etc. should be preserved, but I can't see them all in this view.
-# I will use the tool effectively by appending imports if I can, or I'll just add them to the top if I replace the whole file. 
-# Actually, I'll use multi-replace to insert imports and then the functions.]
+# Load environment variables
+load_dotenv()
+
+# --- Configuration ---
+BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
 SEEN_URLS_FILE = "seen_urls.json"
+
+# News Sources
+RSS_FEEDS = [
+    # Tech News
+    "https://techcrunch.com/feed/",
+    "http://feeds.arstechnica.com/arstechnica/index",
+    "https://www.theverge.com/rss/index.xml",
+    "https://www.wired.com/feed/rss",
+    "https://venturebeat.com/category/ai/feed/",
+    
+    # AI Research & Engineering
+    "https://openai.com/blog/rss/",
+    "https://research.google/blog/rss/", 
+    "https://www.anthropic.com/rss",
+    "https://huggingface.co/blog/feed.xml",
+    "https://aws.amazon.com/blogs/machine-learning/feed/",
+    "https://news.ycombinator.com/rss", 
+]
+
+REDDIT_SUBREDDITS = [
+    "MachineLearning",
+    "artificial",
+    "LocalLLaMA", 
+    "technology",
+    "singularity" 
+]
 
 def load_seen_urls():
     if os.path.exists(SEEN_URLS_FILE):
@@ -32,7 +73,64 @@ def extract_urls_from_post(post_text):
     # Extract URLs that are inside parentheses of markdown links [Text](URL)
     return re.findall(r'\]\((https?://[^)]+)\)', post_text)
 
-# ... [rest of the file] ...
+def clean_html(html_content):
+    """Removes HTML tags from summary text."""
+    if not html_content:
+        return ""
+    soup = BeautifulSoup(html_content, "html.parser")
+    return soup.get_text()[:300] + "..."
+
+def fetch_rss_news():
+    """Fetches news from defined RSS feeds."""
+    news_items = []
+    print("📡 Fetching RSS feeds...")
+    for feed_url in RSS_FEEDS:
+        try:
+            feed = feedparser.parse(feed_url)
+            # Limit to 5 per feed
+            for entry in feed.entries[:5]:
+                is_research = "research" in feed_url or "blog" in feed_url
+                news_items.append({
+                    "title": entry.title,
+                    "summary": clean_html(getattr(entry, 'summary', '')),
+                    "source": feed.feed.get('title', 'Unknown Source'),
+                    "url": entry.link,
+                    "published_at": getattr(entry, 'published', datetime.now().isoformat()),
+                    "type": "research" if is_research else "news"
+                })
+        except Exception as e:
+            print(f"⚠️ Error fetching {feed_url}: {e}")
+    return news_items
+
+def fetch_reddit_news():
+    """Fetches top daily posts from Reddit via RSS (No API Key needed)."""
+    news_items = []
+    print("👽 Fetching Reddit top posts...")
+    headers = {'User-Agent': 'Mozilla/5.0 (compatible; GMBot/1.0)'}
+    
+    for sub in REDDIT_SUBREDDITS:
+        url = f"https://www.reddit.com/r/{sub}/top/.rss?t=day&limit=3"
+        try:
+            response = requests.get(url, headers=headers, timeout=10)
+            if response.status_code == 200:
+                feed = feedparser.parse(response.content)
+                # Limit to 5 per subreddit
+                for entry in feed.entries[:5]:
+                    is_research = sub in ["MachineLearning", "LocalLLaMA", "singularity"]
+                    news_items.append({
+                        "title": entry.title,
+                        "summary": "Reddit Discussion",
+                        "source": f"r/{sub}",
+                        "url": entry.link,
+                        "published_at": getattr(entry, 'updated', datetime.now().isoformat()),
+                        "type": "research" if is_research else "news"
+                    })
+            else:
+                print(f"⚠️ Reddit Error {response.status_code} for r/{sub}")
+        except Exception as e:
+            print(f"⚠️ Error fetching r/{sub}: {e}")
+            
+    return news_items
 
 def generate_digest(news_items, seen_urls=None):
     """Uses Gemini to generate the Telegram message."""
@@ -48,7 +146,10 @@ def generate_digest(news_items, seen_urls=None):
     try:
         client = genai.Client(api_key=GEMINI_API_KEY)
         
-        today_str = datetime.now().strftime("%B %d, %Y")
+        # Use IST timezone
+        ist = pytz.timezone('Asia/Kolkata')
+        now_ist = datetime.now(ist)
+        today_str = now_ist.strftime("%B %d, %Y")
         
         # Prepare input data with seen_urls context
         input_data = {
@@ -200,7 +301,47 @@ def generate_digest(news_items, seen_urls=None):
         print(f"⚠️ Gemini Generation Error: {e}")
         return None
 
-# ... [updated job function below would be needed too]
+def send_telegram_message(message):
+    """Sends the formatted message to Telegram."""
+    if not BOT_TOKEN or not CHAT_ID:
+        print("❌ Telegram config missing.")
+        return
+
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {
+        'chat_id': CHAT_ID,
+        'text': message,
+        'parse_mode': 'MarkdownV2', # Strict MarkdownV2
+        'disable_web_page_preview': True
+    }
+    
+    try:
+        response = requests.post(url, json=payload, timeout=20)
+        start_time = datetime.now()
+        
+        if response.status_code == 200:
+            print(f"✅ Message sent at {start_time}")
+            return True
+        else:
+            print(f"❌ Telegram Send Failed (MarkdownV2): {response.text}")
+            
+            # Fallback: Send as plain text if formatting fails
+            if "can't parse entities" in response.text:
+                print("⚠️ Retrying as Plain Text (Formatting Error)...")
+                if 'parse_mode' in payload:
+                    del payload['parse_mode'] # Remove formatting key completely
+                response = requests.post(url, json=payload, timeout=20)
+                if response.status_code == 200:
+                    print(f"✅ Fallback Message sent at {datetime.now()}")
+                    return True
+                else:
+                    print(f"❌ Fallback Failed: {response.text}")
+                    return False
+            return False
+            
+    except Exception as e:
+        print(f"⚠️ Telegram Connection Error: {e}")
+        return False
 
 def job():
     print(f"⏰ Starting scheduled job at {datetime.now()}...")
