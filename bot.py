@@ -134,57 +134,75 @@ def generate_digest(news_items):
         🔬 *RESEARCH & AI CONCEPTS*
 
         1\. 📄 *{{PAPER/CONCEPT TITLE 1}}*
-        _{{One-sentence plain-English explanation of key finding or concept}}_
+        {{One sentence plain English explanation — NO italic formatting, NO underscores}}
         📎 [Source Name](URL)
 
         2\. 🧠 *{{PAPER/CONCEPT TITLE 2}}*
-        _{{One-sentence plain-English explanation}}_
+        {{One sentence plain English explanation — NO italic formatting, NO underscores}}
         📎 [Source Name](URL)
 
         3\. 📄 *{{PAPER/CONCEPT TITLE 3}}*
-        _{{One-sentence plain-English explanation}}_
+        {{One sentence plain English explanation — NO italic formatting, NO underscores}}
         📎 [Source Name](URL)
 
         4\. 🧠 *{{PAPER/CONCEPT TITLE 4}}*
-        _{{One-sentence plain-English explanation}}_
+        {{One sentence plain English explanation — NO italic formatting, NO underscores}}
         📎 [Source Name](URL)
 
         5\. 📄 *{{PAPER/CONCEPT TITLE 5}}*
-        _{{One-sentence plain-English explanation}}_
+        {{One sentence plain English explanation — NO italic formatting, NO underscores}}
         📎 [Source Name](URL)
 
         📰 *TOP STORIES*
 
         1\. 🔹 *{{HEADLINE 1}}*
-        _{{One-sentence professional summary under 20 words}}_
+        {{One sentence professional summary — NO italic formatting, NO underscores}}
         📎 [Source Name](URL)
 
         2\. 🔹 *{{HEADLINE 2}}*
-        _{{One-sentence professional summary under 20 words}}_
+        {{One sentence professional summary — NO italic formatting, NO underscores}}
         📎 [Source Name](URL)
 
         3\. 🔹 *{{HEADLINE 3}}*
-        _{{One-sentence professional summary under 20 words}}_
+        {{One sentence professional summary — NO italic formatting, NO underscores}}
         📎 [Source Name](URL)
 
         ━━━━━━━━━━━━━━━━━━━━
         🤖 _Tech News by VJ \| {time_str} IST_
         
-        RULES:
-        - SECTION 1: RESEARCH (Items 1-5). Use 📄 for papers, 🧠 for concepts. First 5 items must be research/concepts.
-        - SECTION 2: TOP STORIES (Items 1-3). Specifically the hottest industry news.
-        - Prioritize AI research sources (arXiv, DeepMind, OpenAI) for the first section.
-        - Summaries must be factual, neutral, <20 words.
-        - NO clickbait.
-        
-        DIVERSITY & QUALITY RULES:
+        SUMMARY STYLE RULES:
+        - Write summaries as plain text — NO underscores, NO italic markers.
+        - Output 1 style: clean, direct sentence without any markdown decoration.
+        - Correct: DHS is pressuring tech companies to identify owners of accounts critical of ICE.
+        - Wrong: _DHS is pressuring tech companies to identify owners of accounts critical of ICE._
+
+        SECTION RULES:
+        - RESEARCH section comes FIRST — minimum 5 items always.
+        - Use 📄 for research papers, 🧠 for AI concepts/techniques.
+        - TOP STORIES comes SECOND — exactly 3 hottest industry news items.
+        - Never mix research and news in the same section.
+        - If fewer than 5 research items are available, fill remaining slots with notable AI concepts, technique explainers, or benchmark results.
+
+        DIVERSITY RULES:
         - Maximum 2 items from the same source across the entire post.
-        - Research section must include at least 2 different sources.
+        - Research section must pull from at least 3 different sources.
         - TOP STORIES must come from at least 2 different publications.
-        - NEVER use question-style headlines. Rephrase questions as statements.
-          - Bad: "Is AI Safety Dead?" -> Good: "AI Safety Concerns Raised by Experts"
-        - RESEARCH QUALITY: Do NOT include GitHub pull requests, commits, or changelogs. Only papers, model releases, and technical blogs.
-        
+        - Never use r/LocalLLaMA more than once per post.
+
+        RESEARCH QUALITY RULES:
+        - NEVER include GitHub pull requests, commits, issues, or changelogs.
+        - NEVER include Reddit threads about code changes as research.
+        - Only accept: papers, model releases, research blogs, technical concepts.
+        - Prefer papers published within the last 7 days.
+        - Always explain the "so what" — why it matters to a developer or researcher.
+
+        TOP STORIES SELECTION RULES:
+        - Pick the 3 hottest, most-discussed stories of the day.
+        - Prioritise: major product launches, funding rounds, policy/regulation, security breaches, big tech moves, viral developer news.
+        - Avoid: clickbait, question-style headlines, opinion pieces, duplicate topics.
+        - NEVER use question-style headlines — rewrite as a statement.
+          - Bad: "Is safety dead at xAI?" -> Good: "xAI Safety Culture Under Fire"
+
         CRITICAL ESCAPING RULES: 
           - You MUST backslash-escape ALL of these characters: . ! ( ) - _ * [ ] ~ ` > # + = | {{ }}
           - Example: "GM!" -> "GM\!"
