@@ -249,7 +249,8 @@ def send_telegram_message(message):
             # Fallback: Send as plain text if formatting fails
             if "can't parse entities" in response.text:
                 print("⚠️ Retrying as Plain Text (Formatting Error)...")
-                payload['parse_mode'] = None # Disable formatting
+                if 'parse_mode' in payload:
+                    del payload['parse_mode'] # Remove formatting key completely
                 response = requests.post(url, json=payload, timeout=20)
                 if response.status_code == 200:
                     print(f"✅ Fallback Message sent at {datetime.now()}")
