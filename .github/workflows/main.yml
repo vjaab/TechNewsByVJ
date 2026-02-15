@@ -32,3 +32,18 @@ jobs:
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         GITHUB_ACTIONS: "true"
       run: python bot.py
+
+    - name: Commit and Push seen_urls.json
+      if: success()
+      run: |
+        git config --global user.name "GitHub Actions Bot"
+        git config --global user.email "actions@github.com"
+        git add seen_urls.json || echo "No changes to seen_urls.json"
+        
+        # Check if there are changes to commit
+        if git diff --staged --quiet; then
+          echo "No changes to commit"
+        else
+          git commit -m "Update seen_urls.json for duplicate prevention"
+          git push
+        fi
