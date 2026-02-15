@@ -70,7 +70,8 @@ def save_seen_urls(seen_urls, new_urls):
         print(f"⚠️ Error saving seen_urls: {e}")
 
 def extract_urls_from_post(post_text):
-    # Extract URLs that are inside parentheses of markdown links [Text](URL)
+    # Extract URLs that are inside matching Markdown links [Source](URL)
+    # The new format is 📎 [Source](URL)
     return re.findall(r'\]\((https?://[^)]+)\)', post_text)
 
 def clean_html(html_content):
@@ -132,8 +133,58 @@ def fetch_reddit_news():
             
     return news_items
 
+def escape_markdown_v2(text):
+    """Escapes characters for Telegram MarkdownV2."""
+    if not text: return ""
+    # Characters to escape: _ * [ ] ( ) ~ ` > # + - = | { } . !
+    # We include dot (.) and exclamation mark (!) which are common triggers of errors
+    return re.sub(r'([_*\[\]()~`>#+\-=|{}.!])', r'\\\1', text)
+
+def format_digest_from_json(data):
+    """Formats JSON data into Telegram MarkdownV2 string."""
+    ist = pytz.timezone('Asia/Kolkata')
+    today_str = datetime.now(ist).strftime("%B %d, %Y")
+    
+    # No escape for today_str in this specific format as comma/space are safe
+    # But if dot appears, it needs escape. safe:
+    header_date = escape_markdown_v2(today_str)
+    
+    msg = f"🌅 *GM\! Tech News by VJ* — {header_date}\n\n"
+    
+    msg += "🔬 *RESEARCH & AI CONCEPTS*\n\n"
+    research_items = data.get('research', [])
+    if not research_items:
+        msg += "_(No research items today)_\n\n"
+        
+    for i, item in enumerate(research_items):
+        title = escape_markdown_v2(item.get('title', 'Untitled'))
+        summary = escape_markdown_v2(item.get('summary', ''))
+        source = escape_markdown_v2(item.get('source', 'Source'))
+        url = item.get('url', '')
+        # Ensure url is valid
+        if not url.startswith('http'): url = 'https://google.com'
+            
+        type_icon = item.get('type', '📄')
+        
+        # Structure: 1\. 📄 *Title*
+        msg += f"{i+1}\. {type_icon} *{title}*\n{summary}\n📎 [{source}]({url})\n\n"
+        
+    msg += "📰 *TOP STORIES*\n\n"
+    news_items = data.get('news', [])
+    for i, item in enumerate(news_items):
+        title = escape_markdown_v2(item.get('title', item.get('headline', 'Untitled')))
+        summary = escape_markdown_v2(item.get('summary', ''))
+        source = escape_markdown_v2(item.get('source', 'Source'))
+        url = item.get('url', '')
+        if not url.startswith('http'): url = 'https://google.com'
+        
+        msg += f"{i+1}\. 🔹 *{title}*\n{summary}\n📎 [{source}]({url})\n\n"
+        
+    msg += "━━━━━━━━━━━━━━━━━━━━\n🤖 _Tech News by VJ_"
+    return msg
+
 def generate_digest(news_items, seen_urls=None):
-    """Uses Gemini to generate the Telegram message."""
+    """Uses Gemini to generate the Telegram message via JSON."""
     if seen_urls is None:
         seen_urls = []
         
@@ -146,159 +197,82 @@ def generate_digest(news_items, seen_urls=None):
     try:
         client = genai.Client(api_key=GEMINI_API_KEY)
         
-        # Use IST timezone
         ist = pytz.timezone('Asia/Kolkata')
-        now_ist = datetime.now(ist)
-        today_str = now_ist.strftime("%B %d, %Y")
+        today_str = datetime.now(ist).strftime("%B %d, %Y")
         
-        # Prepare input data with seen_urls context
+        # Prepare input data
         input_data = {
             "items": news_items,
             "seen_urls": seen_urls
         }
         
-        # Use raw f-string to handle backslashes better
         prompt = rf"""
-        You are Tech News by VJ, an AI-powered daily tech news curator for a Telegram channel.
-
-        ## ROLE
-        Every morning you compose one professional, informative "Good Morning" tech digest post
-        for a Telegram audience of developers, founders, and tech enthusiasts who follow
-        cutting-edge AI research, engineering breakthroughs, and industry news.
-
-        ## INPUT
-        You will receive a JSON object containing:
-        - "items": list of raw news items (source, title, summary, url, date)
-        - "seen_urls": list of URLs posted in previous days (filter these out!)
+        You are Tech News by VJ, an AI-powered daily tech news curator.
+        Today is {today_str}.
         
         INPUT DATA:
         {json.dumps(input_data, indent=2)}
-
-        ## DUPLICATE PREVENTION RULES (critical)
-        - You will receive a seen_urls list containing every URL posted in previous days
-        - NEVER include any item whose url appears in seen_urls
-        - NEVER include two items about the same topic or story even if the URLs differ
-          Example: two articles about the same GPT-5 launch = duplicate, pick only the best one
-        - NEVER repeat a research paper title or news headline that appeared in any previous post
-        - If all available items on a topic are duplicates, skip the topic entirely and pick a fresh one
-        - After selecting final 8 items, do a final duplicate check before outputting:
-          ✅ All 8 URLs are unique and not in seen_urls
-          ✅ No two items cover the same event or announcement
-          ✅ No title closely matches any previous post title
-
-        ## OUTPUT FORMAT (strict)
-        Produce a single Telegram-ready message using MarkdownV2 formatting.
-        The post MUST follow this exact structure:
-
-        🌅 *GM\! Tech News by VJ* — {today_str}
-
-        🔬 *RESEARCH & AI CONCEPTS*
-
-        1\. 📄 *{{PAPER/CONCEPT TITLE 1}}*
-        {{One sentence plain English explanation — NO italic formatting, NO underscores}}
-        📎 [Source Name](URL)
-
-        2\. 🧠 *{{PAPER/CONCEPT TITLE 2}}*
-        {{One sentence plain English explanation — NO italic formatting, NO underscores}}
-        📎 [Source Name](URL)
-
-        3\. 📄 *{{PAPER/CONCEPT TITLE 3}}*
-        {{One sentence plain English explanation — NO italic formatting, NO underscores}}
-        📎 [Source Name](URL)
-
-        4\. 🧠 *{{PAPER/CONCEPT TITLE 4}}*
-        {{One sentence plain English explanation — NO italic formatting, NO underscores}}
-        📎 [Source Name](URL)
-
-        5\. 📄 *{{PAPER/CONCEPT TITLE 5}}*
-        {{One sentence plain English explanation — NO italic formatting, NO underscores}}
-        📎 [Source Name](URL)
-
-        📰 *TOP STORIES*
-
-        1\. 🔹 *{{HEADLINE 1}}*
-        {{One sentence professional summary — NO italic formatting, NO underscores}}
-        📎 [Source Name](URL)
-
-        2\. 🔹 *{{HEADLINE 2}}*
-        {{One sentence professional summary — NO italic formatting, NO underscores}}
-        📎 [Source Name](URL)
-
-        3\. 🔹 *{{HEADLINE 3}}*
-        {{One sentence professional summary — NO italic formatting, NO underscores}}
-        📎 [Source Name](URL)
-
-        ━━━━━━━━━━━━━━━━━━━━
-        🤖 _Tech News by VJ_
-
-        ## SUMMARY STYLE RULES
-        - Write summaries as plain text — NO underscores, NO italic markers
-        - Clean, direct sentence without any markdown decoration
-        - Never wrap summaries in underscores _ _ even if the original source uses them
-        - ✅ Correct: DHS is pressuring tech companies to identify owners of accounts critical of ICE.
-        - ❌ Wrong: _DHS is pressuring tech companies to identify owners of accounts critical of ICE._
-
-        ## SECTION RULES
-        - RESEARCH section comes FIRST — minimum 5 items always
-        - Use 📄 for research papers, 🧠 for AI concepts/techniques
-        - TOP STORIES comes SECOND — exactly 3 hottest industry news items
-        - Never mix research and news in the same section
-        - If fewer than 5 research items are available, fill remaining slots with
-          notable AI concepts, technique explainers, or benchmark results
-
-        ## DIVERSITY RULES
-        - Maximum 2 items from the same source across the entire post
-        - Research section must pull from at least 3 different sources
-        - TOP STORIES must come from at least 2 different publications
-        - Never use r/LocalLLaMA more than once per post
-
-        ## TOP STORIES SELECTION RULES
-        - Pick the 3 hottest, most-discussed stories of the day
-        - Prioritise: major product launches, funding rounds, policy/regulation,
-          security breaches, big tech moves, viral developer news
-        - Avoid: clickbait, question-style headlines, opinion pieces, duplicate topics
-        - NEVER use question-style headlines — rewrite as a statement
-        - ❌ "Is safety dead at xAI?"
-        - ✅ "xAI Safety Culture Under Fire as Musk Pushes Unhinged Grok"
-
-        ## RESEARCH QUALITY RULES
-        - NEVER include GitHub pull requests, commits, issues, or changelogs
-        - NEVER include Reddit threads about code changes as research
-        - Only accept: papers, model releases, research blogs, technical concepts
-        - Prefer papers published within the last 7 days
-        - Always explain the "so what" — why it matters to a developer or researcher
-        - Keep summaries under 25 words
-
-        ## LINK RULES (critical)
-        - ALWAYS render each source as a Telegram MarkdownV2 hyperlink: [Source Name](url)
-        - The url field from the input JSON MUST be used as the hyperlink target
-        - NEVER use plain text, bold, or italic for source names
-        - NEVER leave the url placeholder empty or use a dummy URL
-        - If a url is missing from the input, skip that story and pick the next one
-
-        ## MARKDOWNV2 ESCAPING RULES (critical)
-        Escape ALL of these characters with a backslash wherever they appear in text:
-        . ! ( ) - _ * [ ] ~ ` > # + = | {{ }}
-        Examples:
-        - "GM!" -> "GM\!"
-        - "$100 million" -> "\$100 million"
-        - "AI-native" -> "AI\-native"
-        - "GPT-4o" -> "GPT\-4o"
-        - "LLaMA-3" -> "LLaMA\-3"
-        - "1.2" -> "1\.2"
-        - "3GB" -> no escaping needed
-        Do NOT escape characters inside URLs (inside the parentheses of a hyperlink)
-        Never wrap summaries in underscores even if escaping seems to require it
+        
+        TASK:
+        Select the best items and return a JSON object.
+        
+        CRITICAL RULES:
+        1. DUPLICATE PREVENTION: 
+           - 'seen_urls' contains previously posted URLs. NEVER select these.
+           - Filter out multiple items about the same story/release.
+        2. RESEARCH QUALITY:
+           - Exclude GitHub PRs/commits/issues.
+           - Exclude Reddit threads unless they contain significant discussion/insight.
+           - Prefer recent papers (last 7 days).
+        3. DIVERSITY:
+           - Max 2 items from same source.
+           - Research section: min 3 different sources.
+        4. CONTENT:
+           - Research Section: 5 items (Papers 📄 or Concepts 🧠).
+           - Top Stories: 3 items (News 🔹).
+           - Summaries: Plain text, factual, under 25 words. No markdown.
+           - Titles: Clean, no markdown.
+           - URLs: Must be the original URL from input.
+        
+        OUTPUT FORMAT:
+        Return valid JSON only. No markdown formatting in the response.
+        
+        JSON SCHEMA:
+        {{
+          "research": [
+            {{
+              "type": "📄" or "🧠",
+              "title": "Title String",
+              "summary": "Summary String",
+              "source": "Source Name",
+              "url": "URL"
+            }}
+          ],
+          "news": [
+            {{
+              "headline": "Headline String",
+              "summary": "Summary String",
+              "source": "Source Name",
+              "url": "URL"
+            }}
+          ]
+        }}
         """
         
         response = client.models.generate_content(
             model='gemini-2.0-flash',
             contents=prompt
         )
-        return response.text
+        
+        # Parse JSON
+        raw_text = response.text.replace('```json', '').replace('```', '').strip()
+        data = json.loads(raw_text)
+        
+        return format_digest_from_json(data)
         
     except Exception as e:
-        print(f"⚠️ Gemini Generation Error: {e}")
+        print(f"⚠️ Gemini Generation/Parsing Error: {e}")
+        # Could return None or try to generate plain text if needed
         return None
 
 def send_telegram_message(message):
@@ -324,19 +298,6 @@ def send_telegram_message(message):
             return True
         else:
             print(f"❌ Telegram Send Failed (MarkdownV2): {response.text}")
-            
-            # Fallback: Send as plain text if formatting fails
-            if "can't parse entities" in response.text:
-                print("⚠️ Retrying as Plain Text (Formatting Error)...")
-                if 'parse_mode' in payload:
-                    del payload['parse_mode'] # Remove formatting key completely
-                response = requests.post(url, json=payload, timeout=20)
-                if response.status_code == 200:
-                    print(f"✅ Fallback Message sent at {datetime.now()}")
-                    return True
-                else:
-                    print(f"❌ Fallback Failed: {response.text}")
-                    return False
             return False
             
     except Exception as e:
@@ -380,8 +341,6 @@ if __name__ == "__main__":
 
     # Local: Run loop
     print(f"🤖 GM Bot Online. Monitoring... (Press Ctrl+C to stop)")
-    
-    # job() # Run once for testing
     
     try:
         while True:
