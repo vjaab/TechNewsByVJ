@@ -114,12 +114,11 @@ def generate_digest(news_items):
         client = genai.Client(api_key=GEMINI_API_KEY)
         
         today_str = datetime.now().strftime("%B %d, %Y")
-        time_str = datetime.now().strftime("%H:%M")
         
         # Use raw f-string to handle backslashes better
         prompt = rf"""
         You are Tech News by VJ, an AI-powered daily tech news curator.
-        Today is {today_str}. Time is {time_str} IST.
+        Today is {today_str}.
         
         INPUT DATA:
         {str(news_items)}
@@ -129,46 +128,46 @@ def generate_digest(news_items):
         Do NOT include any introductory text like "Here is the digest". Output ONLY the formatted message.
         
         STRICT OUTPUT FORMAT (MarkdownV2):
-        🌅 *GM! Tech News by VJ* — {today_str}
+        🌅 GM! Tech News by VJ — {today_str}
 
-        🔬 *RESEARCH & AI CONCEPTS*
+        🔬 RESEARCH & AI CONCEPTS
 
-        1\. 📄 *{{PAPER/CONCEPT TITLE 1}}*
+        1\. 📄 {{PAPER/CONCEPT TITLE 1}}
         {{One sentence plain English explanation — NO italic formatting, NO underscores}}
         📎 [Source Name](URL)
 
-        2\. 🧠 *{{PAPER/CONCEPT TITLE 2}}*
+        2\. 🧠 {{PAPER/CONCEPT TITLE 2}}
         {{One sentence plain English explanation — NO italic formatting, NO underscores}}
         📎 [Source Name](URL)
 
-        3\. 📄 *{{PAPER/CONCEPT TITLE 3}}*
+        3\. 📄 {{PAPER/CONCEPT TITLE 3}}
         {{One sentence plain English explanation — NO italic formatting, NO underscores}}
         📎 [Source Name](URL)
 
-        4\. 🧠 *{{PAPER/CONCEPT TITLE 4}}*
+        4\. 🧠 {{PAPER/CONCEPT TITLE 4}}
         {{One sentence plain English explanation — NO italic formatting, NO underscores}}
         📎 [Source Name](URL)
 
-        5\. 📄 *{{PAPER/CONCEPT TITLE 5}}*
+        5\. 📄 {{PAPER/CONCEPT TITLE 5}}
         {{One sentence plain English explanation — NO italic formatting, NO underscores}}
         📎 [Source Name](URL)
 
         📰 *TOP STORIES*
 
-        1\. 🔹 *{{HEADLINE 1}}*
+        1\. 🔹 {{HEADLINE 1}}
         {{One sentence professional summary — NO italic formatting, NO underscores}}
         📎 [Source Name](URL)
 
-        2\. 🔹 *{{HEADLINE 2}}*
+        2\. 🔹 {{HEADLINE 2}}
         {{One sentence professional summary — NO italic formatting, NO underscores}}
         📎 [Source Name](URL)
 
-        3\. 🔹 *{{HEADLINE 3}}*
+        3\. 🔹 {{HEADLINE 3}}
         {{One sentence professional summary — NO italic formatting, NO underscores}}
         📎 [Source Name](URL)
 
         ━━━━━━━━━━━━━━━━━━━━
-        🤖 _Tech News by VJ \| {time_str} IST_
+        🤖 Tech News by VJ
         
         SUMMARY STYLE RULES:
         - Write summaries as plain text — NO underscores, NO italic markers.
