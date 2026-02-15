@@ -71,7 +71,6 @@ def save_seen_urls(seen_urls, new_urls):
 
 def extract_urls_from_post(post_text):
     # Extract URLs that are inside matching Markdown links [Source](URL)
-    # The new format is 📎 [Source](URL)
     return re.findall(r'\]\((https?://[^)]+)\)', post_text)
 
 def clean_html(html_content):
@@ -137,7 +136,6 @@ def escape_markdown_v2(text):
     """Escapes characters for Telegram MarkdownV2."""
     if not text: return ""
     # Characters to escape: _ * [ ] ( ) ~ ` > # + - = | { } . !
-    # We include dot (.) and exclamation mark (!) which are common triggers of errors
     return re.sub(r'([_*\[\]()~`>#+\-=|{}.!])', r'\\\1', text)
 
 def format_digest_from_json(data):
@@ -145,8 +143,6 @@ def format_digest_from_json(data):
     ist = pytz.timezone('Asia/Kolkata')
     today_str = datetime.now(ist).strftime("%B %d, %Y")
     
-    # No escape for today_str in this specific format as comma/space are safe
-    # But if dot appears, it needs escape. safe:
     header_date = escape_markdown_v2(today_str)
     
     msg = f"🌅 *GM\! Tech News by VJ* — {header_date}\n\n"
@@ -161,12 +157,10 @@ def format_digest_from_json(data):
         summary = escape_markdown_v2(item.get('summary', ''))
         source = escape_markdown_v2(item.get('source', 'Source'))
         url = item.get('url', '')
-        # Ensure url is valid
         if not url.startswith('http'): url = 'https://google.com'
             
         type_icon = item.get('type', '📄')
         
-        # Structure: 1\. 📄 *Title*
         msg += f"{i+1}\. {type_icon} *{title}*\n{summary}\n📎 [{source}]({url})\n\n"
         
     msg += "📰 *TOP STORIES*\n\n"
@@ -200,42 +194,50 @@ def generate_digest(news_items, seen_urls=None):
         ist = pytz.timezone('Asia/Kolkata')
         today_str = datetime.now(ist).strftime("%B %d, %Y")
         
-        # Prepare input data
         input_data = {
             "items": news_items,
             "seen_urls": seen_urls
         }
         
         prompt = rf"""
-        You are Tech News by VJ, an AI-powered daily tech news curator.
+        You are Tech News by VJ, an AI-powered daily tech news curator for @technewsbyvj.
         Today is {today_str}.
         
         INPUT DATA:
         {json.dumps(input_data, indent=2)}
         
         TASK:
-        Select the best items and return a JSON object.
+        Select the best items to create a curated tech digest in JSON format.
         
         CRITICAL RULES:
         1. DUPLICATE PREVENTION: 
-           - 'seen_urls' contains previously posted URLs. NEVER select these.
-           - Filter out multiple items about the same story/release.
-        2. RESEARCH QUALITY:
-           - Exclude GitHub PRs/commits/issues.
-           - Exclude Reddit threads unless they contain significant discussion/insight.
-           - Prefer recent papers (last 7 days).
-        3. DIVERSITY:
-           - Max 2 items from same source.
-           - Research section: min 3 different sources.
-        4. CONTENT:
-           - Research Section: 5 items (Papers 📄 or Concepts 🧠).
-           - Top Stories: 3 items (News 🔹).
-           - Summaries: Plain text, factual, under 25 words. No markdown.
-           - Titles: Clean, no markdown.
-           - URLs: Must be the original URL from input.
+           - 'seen_urls' contains previously posted URLs. NEVER select any item found in this list.
+           - Check closely for duplicate topics/stories even if URLs differ.
+        
+        2. RESEARCH SELECTION (Priority: Arxiv, HuggingFace, DeepMind, OpenAI):
+           - Select exactly 5 items.
+           - Exclude GitHub PRs/commits/issues/changelogs.
+           - Exclude simple code releases without major significance.
+           - Include: Recent papers (~7 days), AI concepts, strong engineering blogs.
+        
+        3. NEWS SELECTION (Priority: TechCrunch, Verge, Wired, VentureBeat):
+           - Select exactly 3 items.
+           - Focus on: Product launches, Funding, Policy, Major moves.
+           - Avoid: Clickbait, duplicate topics.
+        
+        4. CONTENT STYLE:
+           - Titles: Clean, unformatted text.
+           - Summaries: Plain text, factual, neutral tone, <25 words.
+           - Sources: Clean name (e.g., "TechCrunch", "Arxiv").
+           - Diversity: Max 2 items from the same source.
+        
+        5. AI CONCEPTS TO COVER:
+           - MoE, SSM, Mamba, Transformers++
+           - RLHF, DPO, LoRA, RAG
+           - Agents (CoT, ToT), Multimodal
         
         OUTPUT FORMAT:
-        Return valid JSON only. No markdown formatting in the response.
+        Return valid JSON only. Do NOT output Markdown.
         
         JSON SCHEMA:
         {{
@@ -272,7 +274,6 @@ def generate_digest(news_items, seen_urls=None):
         
     except Exception as e:
         print(f"⚠️ Gemini Generation/Parsing Error: {e}")
-        # Could return None or try to generate plain text if needed
         return None
 
 def send_telegram_message(message):
@@ -285,19 +286,17 @@ def send_telegram_message(message):
     payload = {
         'chat_id': CHAT_ID,
         'text': message,
-        'parse_mode': 'MarkdownV2', # Strict MarkdownV2
+        'parse_mode': 'MarkdownV2',
         'disable_web_page_preview': True
     }
     
     try:
         response = requests.post(url, json=payload, timeout=20)
-        start_time = datetime.now()
-        
         if response.status_code == 200:
-            print(f"✅ Message sent at {start_time}")
+            print(f"✅ Message sent successfully")
             return True
         else:
-            print(f"❌ Telegram Send Failed (MarkdownV2): {response.text}")
+            print(f"❌ Telegram Send Failed: {response.text}")
             return False
             
     except Exception as e:
@@ -312,15 +311,12 @@ def job():
         print("⚠️ No news found! Check connections.")
         return
 
-    # Load seen URLs
     seen_urls = load_seen_urls()
-    
     digest = generate_digest(all_news, seen_urls)
     
     if digest:
         success = send_telegram_message(digest)
         if success:
-             # Extract and save new URLs
              new_urls = extract_urls_from_post(digest)
              save_seen_urls(seen_urls, new_urls)
              print(f"📝 Saved {len(new_urls)} new URLs to history.")
@@ -329,19 +325,16 @@ def job():
 
 if __name__ == "__main__":
     if not GEMINI_API_KEY:
-        print("🚨 WARNING: GEMINI_API_KEY is missing. Get a FREE key at https://aistudio.google.com/")
+        print("🚨 WARNING: GEMINI_API_KEY is missing.")
     if not BOT_TOKEN:
          print("🚨 WARNING: TELEGRAM_BOT_TOKEN is missing.")
 
-    # CI/CD: Run once and exit
     if os.getenv('GITHUB_ACTIONS'):
         print("🚀 Running in GitHub Actions mode (Single execution)")
         job()
         sys.exit(0)
 
-    # Local: Run loop
     print(f"🤖 GM Bot Online. Monitoring... (Press Ctrl+C to stop)")
-    
     try:
         while True:
             schedule.run_pending()
