@@ -176,7 +176,16 @@ def generate_digest(news_items):
         - Prioritize AI research sources (arXiv, DeepMind, OpenAI) for the first section.
         - Summaries must be factual, neutral, <20 words.
         - NO clickbait.
-        - CRITICAL ESCAPING RULES: 
+        
+        DIVERSITY & QUALITY RULES:
+        - Maximum 2 items from the same source across the entire post.
+        - Research section must include at least 2 different sources.
+        - TOP STORIES must come from at least 2 different publications.
+        - NEVER use question-style headlines. Rephrase questions as statements.
+          - Bad: "Is AI Safety Dead?" -> Good: "AI Safety Concerns Raised by Experts"
+        - RESEARCH QUALITY: Do NOT include GitHub pull requests, commits, or changelogs. Only papers, model releases, and technical blogs.
+        
+        CRITICAL ESCAPING RULES: 
           - You MUST backslash-escape ALL of these characters: . ! ( ) - _ * [ ] ~ ` > # + = | {{ }}
           - Example: "GM!" -> "GM\!"
           - Example: "GPT-4" -> "GPT\-4"
