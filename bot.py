@@ -177,7 +177,8 @@ def format_digest_from_json(data):
     msg += "━━━━━━━━━━━━━━━━━━━━\n🤖 _Tech News by VJ_"
     return msg
 
-def generate_digest(news_items, seen_urls=None):
+
+def generate_digest(news_items, mode, seen_urls=None):
     """Uses Gemini to generate the Telegram message via JSON."""
     if seen_urls is None:
         seen_urls = []
@@ -186,7 +187,7 @@ def generate_digest(news_items, seen_urls=None):
         print("❌ Error: GEMINI_API_KEY is not set.")
         return None
 
-    print(f"🤖 Generating digest for {len(news_items)} items using Gemini...")
+    print(f"🤖 Generating digest for {len(news_items)} items in '{mode}' mode using Gemini...")
     
     try:
         client = genai.Client(api_key=GEMINI_API_KEY)
@@ -199,39 +200,56 @@ def generate_digest(news_items, seen_urls=None):
             "seen_urls": seen_urls
         }
         
-        prompt = rf"""
+        system_instruction = f"""
         You are Tech News by VJ, an AI-powered daily tech news curator for @technewsbyvj.
         Today is {today_str}.
-        
+        Current Mode: {mode.upper()}
+        """
+
+        task_instruction = f"""
         INPUT DATA:
         {json.dumps(input_data, indent=2)}
         
         TASK:
-        Select the best items to create a curated tech digest in JSON format.
+        Select the best items to create a curated tech digest in JSON format for the '{mode}' category.
         
         CRITICAL RULES:
         1. DUPLICATE PREVENTION: 
            - 'seen_urls' contains previously posted URLs. NEVER select any item found in this list.
            - Check closely for duplicate topics/stories even if URLs differ.
-        
+        """
+
+        if mode == 'research':
+            task_instruction += """
         2. RESEARCH SELECTION (Priority: Arxiv, HuggingFace, DeepMind, OpenAI):
            - Select exactly 5 items.
            - Exclude GitHub PRs/commits/issues/changelogs.
            - Exclude simple code releases without major significance.
            - Include: Recent papers (~7 days), AI concepts, strong engineering blogs.
-        
-        3. NEWS SELECTION (Priority: TechCrunch, Verge, Wired, VentureBeat):
-           - Select exactly 3 items.
+           - ONLY return items with type="research" or relevant to research.
+            """
+        elif mode == 'news':
+            task_instruction += """
+        2. NEWS SELECTION (Priority: TechCrunch, Verge, Wired, VentureBeat):
+           - Select exactly 5 items.
            - Focus on: Product launches, Funding, Policy, Major moves.
            - Avoid: Clickbait, duplicate topics.
-        
-        4. CONTENT STYLE:
+           - ONLY return items with type="news" or relevant to tech news.
+            """
+        else: # mixed/all
+             task_instruction += """
+        2. SELECTION MIX:
+           - Select 3 Research items and 3 News items.
+             """
+
+        task_instruction += """
+        3. CONTENT STYLE:
            - Titles: Clean, unformatted text.
            - Summaries: Plain text, factual, neutral tone, <25 words.
            - Sources: Clean name (e.g., "TechCrunch", "Arxiv").
            - Diversity: Max 2 items from the same source.
         
-        5. AI CONCEPTS TO COVER:
+        4. AI CONCEPTS TO COVER (if applicable):
            - MoE, SSM, Mamba, Transformers++
            - RLHF, DPO, LoRA, RAG
            - Agents (CoT, ToT), Multimodal
@@ -240,26 +258,20 @@ def generate_digest(news_items, seen_urls=None):
         Return valid JSON only. Do NOT output Markdown.
         
         JSON SCHEMA:
-        {{
-          "research": [
-            {{
-              "type": "📄" or "🧠",
+        {
+          "items": [
+            {
+              "type": "📄" or "🧠" (for research) / "🔹" (for news),
               "title": "Title String",
               "summary": "Summary String",
               "source": "Source Name",
               "url": "URL"
-            }}
-          ],
-          "news": [
-            {{
-              "headline": "Headline String",
-              "summary": "Summary String",
-              "source": "Source Name",
-              "url": "URL"
-            }}
+            }
           ]
-        }}
+        }
         """
+        
+        prompt = system_instruction + task_instruction
         
         response = client.models.generate_content(
             model='gemini-2.0-flash',
@@ -270,49 +282,75 @@ def generate_digest(news_items, seen_urls=None):
         raw_text = response.text.replace('```json', '').replace('```', '').strip()
         data = json.loads(raw_text)
         
-        return format_digest_from_json(data)
+        return format_digest_from_json(data, mode)
         
     except Exception as e:
         print(f"⚠️ Gemini Generation/Parsing Error: {e}")
         return None
 
-def send_telegram_message(message):
-    """Sends the formatted message to Telegram."""
-    if not BOT_TOKEN or not CHAT_ID:
-        print("❌ Telegram config missing.")
-        return
-
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {
-        'chat_id': CHAT_ID,
-        'text': message,
-        'parse_mode': 'MarkdownV2',
-        'disable_web_page_preview': True
-    }
+def format_digest_from_json(data, mode):
+    """Formats JSON data into Telegram MarkdownV2 string."""
+    ist = pytz.timezone('Asia/Kolkata')
+    today_str = datetime.now(ist).strftime("%B %d, %Y")
+    now_hour = datetime.now(ist).hour
     
-    try:
-        response = requests.post(url, json=payload, timeout=20)
-        if response.status_code == 200:
-            print(f"✅ Message sent successfully")
-            return True
-        else:
-            print(f"❌ Telegram Send Failed: {response.text}")
-            return False
-            
-    except Exception as e:
-        print(f"⚠️ Telegram Connection Error: {e}")
-        return False
+    header_date = escape_markdown_v2(today_str)
+    
+    greeting = "🌅 *GM*" if now_hour < 12 else "☕ *Good Afternoon*"
+    
+    topic_header = ""
+    if mode == 'research':
+        topic_header = "🔬 *RESEARCH & AI PAPERS*"
+    elif mode == 'news':
+        topic_header = "📰 *TECH NEWS & UPDATES*"
+    else:
+        topic_header = "🗞️ *TECH DIGEST*"
 
-def job():
-    print(f"⏰ Starting scheduled job at {datetime.now()}...")
+    msg = f"{greeting} — {topic_header}\n{header_date}\n\n"
+    
+    items = data.get('items', [])
+    if not items:
+         # Fallback for old schema if model hallucinates old structure
+         items = data.get('research', []) + data.get('news', [])
+
+    if not items:
+        msg += "_(No updates found at this time)_\n\n"
+        
+    for i, item in enumerate(items):
+        title = escape_markdown_v2(item.get('title', 'Untitled'))
+        summary = escape_markdown_v2(item.get('summary', ''))
+        source = escape_markdown_v2(item.get('source', 'Source'))
+        url = item.get('url', '')
+        if not url.startswith('http'): url = 'https://google.com'
+            
+        type_icon = item.get('type', '🔹')
+        
+        msg += f"{i+1}\. {type_icon} *{title}*\n{summary}\n📎 [{source}]({url})\n\n"
+        
+    msg += "━━━━━━━━━━━━━━━━━━━━\n🤖 _Tech News by VJ_"
+    return msg
+
+def job(mode='all'):
+    print(f"⏰ Starting scheduled job ({mode}) at {datetime.now()}...")
     all_news = fetch_rss_news() + fetch_reddit_news()
     
     if not all_news:
         print("⚠️ No news found! Check connections.")
         return
 
+    # Filter based on mode if needed, though LLM handles it best, 
+    # pre-filtering saves tokens and reduces noise.
+    if mode == 'research':
+        all_news = [n for n in all_news if n.get('type') == 'research']
+    elif mode == 'news':
+        all_news = [n for n in all_news if n.get('type') == 'news']
+    
+    if not all_news:
+         print(f"⚠️ No items found for mode '{mode}'.")
+         return
+
     seen_urls = load_seen_urls()
-    digest = generate_digest(all_news, seen_urls)
+    digest = generate_digest(all_news, mode, seen_urls)
     
     if digest:
         success = send_telegram_message(digest)
@@ -324,18 +362,34 @@ def job():
         print("⚠️ Failed to generate digest.")
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description='Run Tech News Bot')
+    parser.add_argument('--mode', type=str, default='all', choices=['all', 'research', 'news'], help='Mode to run: research, news, or all')
+    args = parser.parse_args()
+
     if not GEMINI_API_KEY:
         print("🚨 WARNING: GEMINI_API_KEY is missing.")
     if not BOT_TOKEN:
          print("🚨 WARNING: TELEGRAM_BOT_TOKEN is missing.")
 
     if os.getenv('GITHUB_ACTIONS'):
-        print("🚀 Running in GitHub Actions mode (Single execution)")
-        job()
+        print(f"🚀 Running in GitHub Actions mode ({args.mode})")
+        job(args.mode)
         sys.exit(0)
 
     print(f"🤖 GM Bot Online. Monitoring... (Press Ctrl+C to stop)")
+    # For local testing without args, it runs 'all'
+    # To schedule specifically locally, you'd need to adjust this loop or run via cron
+    
+    # Simple local schedule simulation for testing
+    # schedule.every().day.at("09:00").do(job, mode='research')
+    # schedule.every().day.at("14:00").do(job, mode='news')
+    
     try:
+        if args.mode != 'all':
+             job(args.mode) # Run once if mode is specified manually
+             sys.exit(0)
+             
         while True:
             schedule.run_pending()
             time.sleep(1)

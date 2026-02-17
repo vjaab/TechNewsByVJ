@@ -1,9 +1,9 @@
-name: "Daily Tech News by VJ"
+name: "Afternoon Tech News"
 
 on:
   schedule:
-    # Runs at 03:30 UTC every day (which is 09:00 AM IST)
-    - cron: '30 3 * * *'
+    # Runs at 09:00 UTC (02:30 PM IST)
+    - cron: '0 9 * * *'
   workflow_dispatch:
     # Allows you to manually run this workflow from the Actions tab
 
@@ -11,7 +11,7 @@ permissions:
   contents: write
 
 jobs:
-  run_bot:
+  run_news_bot:
     runs-on: ubuntu-latest
 
     steps:
@@ -28,25 +28,26 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
-    - name: Run GM Bot
+    - name: Run Afternoon News Digest
       env:
         TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         GITHUB_ACTIONS: "true"
-      run: python bot.py
+      run: python bot.py --mode news
 
     - name: Commit and Push seen_urls.json
       if: success()
       run: |
         git config --global user.name "GitHub Actions Bot"
         git config --global user.email "actions@github.com"
+        git pull
         git add seen_urls.json || echo "No changes to seen_urls.json"
         
         # Check if there are changes to commit
         if git diff --staged --quiet; then
           echo "No changes to commit"
         else
-          git commit -m "Update seen_urls.json for duplicate prevention"
+          git commit -m "Update seen_urls.json (Afternoon News)"
           git push
         fi
