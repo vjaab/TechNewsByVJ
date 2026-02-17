@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import os
 import sys
 import time
@@ -8,7 +9,8 @@ import schedule
 import feedparser
 import pytz
 import google.genai as genai
-from datetime import datetime
+from datetime import datetime, timedelta
+from dateutil import parser as date_parser
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
@@ -80,6 +82,29 @@ def clean_html(html_content):
     soup = BeautifulSoup(html_content, "html.parser")
     return soup.get_text()[:300] + "..."
 
+def is_within_24_hours(published_date_str):
+    """Checks if the published date string is within the last 24 hours."""
+    if not published_date_str:
+        return True # Default to True if no date, or handle appropriately
+        
+    try:
+        # Parse the date string using dateutil for robust parsing
+        pub_date = date_parser.parse(published_date_str)
+        
+        # Ensure pub_date is timezone-aware if possible, or naive if system is naive
+        # Standardize to UTC for comparison if possible
+        if pub_date.tzinfo is None:
+             pub_date = pytz.utc.localize(pub_date)
+        
+        now = datetime.now(pytz.utc)
+        
+        # Calculate difference
+        diff = now - pub_date
+        return diff < timedelta(hours=24)
+    except Exception as e:
+        # print(f"Date parsing error: {e}")
+        return True # Fallback
+
 def fetch_rss_news():
     """Fetches news from defined RSS feeds."""
     news_items = []
@@ -87,15 +112,21 @@ def fetch_rss_news():
     for feed_url in RSS_FEEDS:
         try:
             feed = feedparser.parse(feed_url)
-            # Limit to 5 per feed
-            for entry in feed.entries[:5]:
+            # Fetch all items (limit 20 per feed to avoid overload, but more than 5)
+            for entry in feed.entries[:30]:
+                published = getattr(entry, 'published', getattr(entry, 'updated', None))
+                
+                # Check if within 24 hours
+                if published and not is_within_24_hours(published):
+                    continue
+                    
                 is_research = "research" in feed_url or "blog" in feed_url
                 news_items.append({
                     "title": entry.title,
                     "summary": clean_html(getattr(entry, 'summary', '')),
                     "source": feed.feed.get('title', 'Unknown Source'),
                     "url": entry.link,
-                    "published_at": getattr(entry, 'published', datetime.now().isoformat()),
+                    "published_at": published or datetime.now().isoformat(),
                     "type": "research" if is_research else "news"
                 })
         except Exception as e:
@@ -109,20 +140,26 @@ def fetch_reddit_news():
     headers = {'User-Agent': 'Mozilla/5.0 (compatible; GMBot/1.0)'}
     
     for sub in REDDIT_SUBREDDITS:
-        url = f"https://www.reddit.com/r/{sub}/top/.rss?t=day&limit=3"
+        url = f"https://www.reddit.com/r/{sub}/top/.rss?t=day&limit=10"
         try:
             response = requests.get(url, headers=headers, timeout=10)
             if response.status_code == 200:
                 feed = feedparser.parse(response.content)
-                # Limit to 5 per subreddit
-                for entry in feed.entries[:5]:
+                # Fetch all items
+                for entry in feed.entries[:20]:
+                    published = getattr(entry, 'updated', None)
+                    
+                    # Check if within 24 hours
+                    if published and not is_within_24_hours(published):
+                        continue
+                        
                     is_research = sub in ["MachineLearning", "LocalLLaMA", "singularity"]
                     news_items.append({
                         "title": entry.title,
                         "summary": "Reddit Discussion",
                         "source": f"r/{sub}",
                         "url": entry.link,
-                        "published_at": getattr(entry, 'updated', datetime.now().isoformat()),
+                        "published_at": published or datetime.now().isoformat(),
                         "type": "research" if is_research else "news"
                     })
             else:
@@ -222,7 +259,8 @@ def generate_digest(news_items, mode, seen_urls=None):
         if mode == 'research':
             task_instruction += """
         2. RESEARCH SELECTION (Priority: Arxiv, HuggingFace, DeepMind, OpenAI):
-           - Select exactly 5 items.
+           - Select ALL high-quality, relevant items found. DO NOT limit to 5.
+           - STRICTLY DEDUPLICATE: If multiple feeds cover the same paper/topic, keep only the best one.
            - Exclude GitHub PRs/commits/issues/changelogs.
            - Exclude simple code releases without major significance.
            - Include: Recent papers (~7 days), AI concepts, strong engineering blogs.
@@ -231,7 +269,8 @@ def generate_digest(news_items, mode, seen_urls=None):
         elif mode == 'news':
             task_instruction += """
         2. NEWS SELECTION (Priority: TechCrunch, Verge, Wired, VentureBeat):
-           - Select exactly 5 items.
+           - Select ALL relevant, significant news items. DO NOT limit to 5.
+           - STRICTLY DEDUPLICATE: If multiple feeds cover the same story, choose the ONE best source.
            - Focus on: Product launches, Funding, Policy, Major moves.
            - Avoid: Clickbait, duplicate topics.
            - ONLY return items with type="news" or relevant to tech news.
@@ -239,7 +278,7 @@ def generate_digest(news_items, mode, seen_urls=None):
         else: # mixed/all
              task_instruction += """
         2. SELECTION MIX:
-           - Select 3 Research items and 3 News items.
+           - Select ALL relevant Research AND News items. Provide a comprehensive digest.
              """
 
         task_instruction += """
@@ -329,6 +368,57 @@ def format_digest_from_json(data, mode):
         
     msg += "━━━━━━━━━━━━━━━━━━━━\n🤖 _Tech News by VJ_"
     return msg
+
+def send_telegram_message(message):
+    """Sends the formatted message to Telegram, splitting if necessary."""
+    if not BOT_TOKEN or not CHAT_ID:
+        print("❌ Telegram config missing.")
+        return False
+
+    # Split message if too long
+    max_length = 4000
+    messages = []
+    if len(message) > max_length:
+        print(f"⚠️ Message length {len(message)} exceeds limit. Splitting...")
+        # Simple split by double newline to keep items together
+        parts = message.split('\n\n')
+        current_chunk = ""
+        for part in parts:
+             if len(current_chunk) + len(part) + 2 > max_length:
+                 messages.append(current_chunk)
+                 current_chunk = part + "\n\n"
+             else:
+                 current_chunk += part + "\n\n"
+        if current_chunk:
+            messages.append(current_chunk)
+    else:
+        messages = [message]
+
+    success = True
+    for i, msg in enumerate(messages):
+        if not msg.strip(): continue
+        
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        payload = {
+            'chat_id': CHAT_ID,
+            'text': msg,
+            'parse_mode': 'MarkdownV2',
+            'disable_web_page_preview': True
+        }
+        
+        try:
+            response = requests.post(url, json=payload, timeout=20)
+            if response.status_code == 200:
+                print(f"✅ Message part {i+1}/{len(messages)} sent successfully")
+            else:
+                print(f"❌ Telegram Send Failed for part {i+1}: {response.text}")
+                success = False
+                
+        except Exception as e:
+            print(f"⚠️ Telegram Connection Error: {e}")
+            success = False
+            
+    return success
 
 def job(mode='all'):
     print(f"⏰ Starting scheduled job ({mode}) at {datetime.now()}...")
