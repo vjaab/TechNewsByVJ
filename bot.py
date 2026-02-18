@@ -22,6 +22,11 @@ BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
+# WhatsApp Config
+WHATSAPP_TOKEN = os.getenv('WHATSAPP_ACCESS_TOKEN')
+WHATSAPP_PHONE_ID = os.getenv('WHATSAPP_PHONE_NUMBER_ID')
+WHATSAPP_RECIPIENT = os.getenv('WHATSAPP_RECIPIENT_PHONE_NUMBER')
+
 SEEN_URLS_FILE = "seen_urls.json"
 
 # News Sources
@@ -71,9 +76,11 @@ def save_seen_urls(seen_urls, new_urls):
     except Exception as e:
         print(f"⚠️ Error saving seen_urls: {e}")
 
-def extract_urls_from_post(post_text):
-    # Extract URLs that are inside matching Markdown links [Source](URL)
-    return re.findall(r'\]\((https?://[^)]+)\)', post_text)
+def extract_urls_from_data(data):
+    """Extracts URLs directly from the data dictionary."""
+    if not data or 'items' not in data:
+        return []
+    return [item.get('url') for item in data['items'] if item.get('url')]
 
 def clean_html(html_content):
     """Removes HTML tags from summary text."""
@@ -175,44 +182,7 @@ def escape_markdown_v2(text):
     # Characters to escape: _ * [ ] ( ) ~ ` > # + - = | { } . !
     return re.sub(r'([_*\[\]()~`>#+\-=|{}.!])', r'\\\1', text)
 
-def format_digest_from_json(data):
-    """Formats JSON data into Telegram MarkdownV2 string."""
-    ist = pytz.timezone('Asia/Kolkata')
-    today_str = datetime.now(ist).strftime("%B %d, %Y")
-    
-    header_date = escape_markdown_v2(today_str)
-    
-    msg = f"🌅 *GM\! Tech News by VJ* — {header_date}\n\n"
-    
-    msg += "🔬 *RESEARCH & AI CONCEPTS*\n\n"
-    research_items = data.get('research', [])
-    if not research_items:
-        msg += "_(No research items today)_\n\n"
-        
-    for i, item in enumerate(research_items):
-        title = escape_markdown_v2(item.get('title', 'Untitled'))
-        summary = escape_markdown_v2(item.get('summary', ''))
-        source = escape_markdown_v2(item.get('source', 'Source'))
-        url = item.get('url', '')
-        if not url.startswith('http'): url = 'https://google.com'
-            
-        type_icon = item.get('type', '📄')
-        
-        msg += f"{i+1}\. {type_icon} *{title}*\n{summary}\n📎 [{source}]({url})\n\n"
-        
-    msg += "📰 *TOP STORIES*\n\n"
-    news_items = data.get('news', [])
-    for i, item in enumerate(news_items):
-        title = escape_markdown_v2(item.get('title', item.get('headline', 'Untitled')))
-        summary = escape_markdown_v2(item.get('summary', ''))
-        source = escape_markdown_v2(item.get('source', 'Source'))
-        url = item.get('url', '')
-        if not url.startswith('http'): url = 'https://google.com'
-        
-        msg += f"{i+1}\. 🔹 *{title}*\n{summary}\n📎 [{source}]({url})\n\n"
-        
-    msg += "━━━━━━━━━━━━━━━━━━━━\n🤖 _Tech News by VJ_"
-    return msg
+
 
 
 def generate_digest(news_items, mode, seen_urls=None):
@@ -340,13 +310,13 @@ def generate_digest(news_items, mode, seen_urls=None):
         raw_text = response.text.replace('```json', '').replace('```', '').strip()
         data = json.loads(raw_text)
         
-        return format_digest_from_json(data, mode)
+        return data
         
     except Exception as e:
         print(f"⚠️ Gemini Generation/Parsing Error: {e}")
         return None
 
-def format_digest_from_json(data, mode):
+def format_telegram_digest(data, mode):
     """Formats JSON data into Telegram MarkdownV2 string."""
     ist = pytz.timezone('Asia/Kolkata')
     today_str = datetime.now(ist).strftime("%B %d, %Y")
@@ -384,6 +354,45 @@ def format_digest_from_json(data, mode):
         type_icon = item.get('type', '🔹')
         
         msg += f"{i+1}\. {type_icon} *{title}*\n{summary}\n📎 [{source}]({url})\n\n"
+        
+    msg += "━━━━━━━━━━━━━━━━━━━━\n🤖 _Tech News by VJ_"
+    return msg
+
+def format_whatsapp_digest(data, mode):
+    """Formats JSON data into WhatsApp Markdown string."""
+    ist = pytz.timezone('Asia/Kolkata')
+    today_str = datetime.now(ist).strftime("%B %d, %Y")
+    now_hour = datetime.now(ist).hour
+    
+    greeting = "🌅 *GM*" if now_hour < 12 else "☕ *Good Afternoon*"
+    
+    topic_header = ""
+    if mode == 'research':
+        topic_header = "🔬 *RESEARCH & AI PAPERS*"
+    elif mode == 'news':
+        topic_header = "📰 *TECH NEWS & UPDATES*"
+    else:
+        topic_header = "🗞️ *TECH DIGEST*"
+
+    msg = f"{greeting} — {topic_header}\n{today_str}\n\n"
+    
+    items = data.get('items', [])
+    if not items:
+         items = data.get('research', []) + data.get('news', [])
+
+    if not items:
+        msg += "_(No updates found at this time)_\n\n"
+        
+    for i, item in enumerate(items):
+        title = item.get('title', 'Untitled').replace('*', '')
+        summary = item.get('summary', '')
+        source = item.get('source', 'Source')
+        url = item.get('url', '')
+        if not url.startswith('http'): url = 'https://google.com'
+            
+        type_icon = item.get('type', '🔹')
+        
+        msg += f"{i+1}. {type_icon} *{title}*\n{summary}\n📎 {source}: {url}\n\n"
         
     msg += "━━━━━━━━━━━━━━━━━━━━\n🤖 _Tech News by VJ_"
     return msg
@@ -439,6 +448,61 @@ def send_telegram_message(message):
             
     return success
 
+def send_whatsapp_message(message):
+    """Sends the formatted message to WhatsApp via Facebook Graph API."""
+    if not WHATSAPP_TOKEN or not WHATSAPP_PHONE_ID or not WHATSAPP_RECIPIENT:
+        print("❌ WhatsApp config missing. Skipping WhatsApp send.")
+        return False
+
+    url = f"https://graph.facebook.com/v22.0/{WHATSAPP_PHONE_ID}/messages"
+    headers = {
+        'Authorization': f'Bearer {WHATSAPP_TOKEN}',
+        'Content-Type': 'application/json'
+    }
+
+    # WhatsApp has a character limit ~4096. Splitting logic similar to Telegram.
+    messages = []
+    max_length = 4000
+    if len(message) > max_length:
+        print(f"⚠️ WhatsApp Message length {len(message)} exceeds limit. Splitting...")
+        parts = message.split('\n\n')
+        current_chunk = ""
+        for part in parts:
+             if len(current_chunk) + len(part) + 2 > max_length:
+                 messages.append(current_chunk)
+                 current_chunk = part + "\n\n"
+             else:
+                 current_chunk += part + "\n\n"
+        if current_chunk:
+            messages.append(current_chunk)
+    else:
+        messages = [message]
+
+    success = True
+    for i, msg_part in enumerate(messages):
+        payload = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": WHATSAPP_RECIPIENT,
+            "type": "text",
+            "text": {
+                "body": msg_part
+            }
+        }
+        
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=20)
+            if response.status_code in [200, 201]:
+                print(f"✅ WhatsApp message part {i+1}/{len(messages)} sent successfully")
+            else:
+                print(f"❌ WhatsApp Send Failed: {response.status_code} - {response.text}")
+                success = False
+        except Exception as e:
+            print(f"⚠️ WhatsApp Connection Error: {e}")
+            success = False
+            
+    return success
+
 def job(mode='all'):
     print(f"⏰ Starting scheduled job ({mode}) at {datetime.now()}...")
     all_news = fetch_rss_news() + fetch_reddit_news()
@@ -467,12 +531,19 @@ def job(mode='all'):
         all_news = all_news[:60]
 
     seen_urls = load_seen_urls()
-    digest = generate_digest(all_news, mode, seen_urls)
+    digest_data = generate_digest(all_news, mode, seen_urls)
     
-    if digest:
-        success = send_telegram_message(digest)
-        if success:
-             new_urls = extract_urls_from_post(digest)
+    if digest_data:
+        # 1. Telegram
+        tg_message = format_telegram_digest(digest_data, mode)
+        tg_success = send_telegram_message(tg_message)
+        
+        # 2. WhatsApp
+        wa_message = format_whatsapp_digest(digest_data, mode)
+        wa_success = send_whatsapp_message(wa_message)
+
+        if tg_success or wa_success:
+             new_urls = extract_urls_from_data(digest_data)
              save_seen_urls(seen_urls, new_urls)
              print(f"📝 Saved {len(new_urls)} new URLs to history.")
     else:
