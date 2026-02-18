@@ -312,10 +312,29 @@ def generate_digest(news_items, mode, seen_urls=None):
         
         prompt = system_instruction + task_instruction
         
-        response = client.models.generate_content(
-            model='gemini-2.0-flash',
-            contents=prompt
-        )
+        response = None
+        for attempt in range(3):
+            try:
+                response = client.models.generate_content(
+                    model='gemini-2.0-flash',
+                    contents=prompt
+                )
+                break
+            except Exception as e:
+                # Catch 429 specifically
+                if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+                    if attempt < 2:
+                        wait_time = (attempt + 1) * 20
+                        print(f"⚠️ Quota exceeded (429). Retrying in {wait_time}s...")
+                        time.sleep(wait_time)
+                    else:
+                        print("❌ Max retries for Gemini API reached.")
+                        raise e
+                else:
+                    raise e
+                    
+        if not response:
+             return None
         
         # Parse JSON
         raw_text = response.text.replace('```json', '').replace('```', '').strip()
@@ -438,6 +457,14 @@ def job(mode='all'):
     if not all_news:
          print(f"⚠️ No items found for mode '{mode}'.")
          return
+
+    # Sort by date (newest first) to prioritize fresh content
+    all_news.sort(key=lambda x: x.get('published_at', ''), reverse=True)
+    
+    # Limit to top 60 items to prevent Token Limit Exceeded / 429 Errors
+    if len(all_news) > 60:
+        print(f"⚠️ Truncating input from {len(all_news)} to 60 items to save quota.")
+        all_news = all_news[:60]
 
     seen_urls = load_seen_urls()
     digest = generate_digest(all_news, mode, seen_urls)
