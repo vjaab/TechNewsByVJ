@@ -486,7 +486,8 @@ def send_whatsapp_message(message):
             "to": WHATSAPP_RECIPIENT,
             "type": "text",
             "text": {
-                "body": msg_part
+                "body": msg_part,
+                "preview_url": False
             }
         }
         
