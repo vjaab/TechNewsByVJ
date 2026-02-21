@@ -256,7 +256,7 @@ def generate_digest(news_items, mode, seen_urls=None):
            - Titles: Clean, unformatted text.
            - Summaries: Plain text, factual, neutral tone, <25 words.
            - Sources: Clean name (e.g., "TechCrunch", "Arxiv").
-           - Diversity: Max 2 items from the same source.
+           - Diversity: Max 2 items from any single source. Maximum of 2 items TOTAL from all Reddit sources combined.
         
         4. AI CONCEPTS TO COVER (if applicable):
            - MoE, SSM, Mamba, Transformers++
