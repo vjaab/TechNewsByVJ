@@ -2,8 +2,8 @@ name: "Afternoon Tech News"
 
 on:
   schedule:
-    # Runs at 09:00 UTC (02:30 PM IST)
-    - cron: '0 9 * * *'
+    # Runs at 01:30 UTC (07:00 AM IST)
+    - cron: '30 1 * * *'
   workflow_dispatch:
     # Allows you to manually run this workflow from the Actions tab
 
