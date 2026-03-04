@@ -336,7 +336,7 @@ def format_telegram_digest(data, mode):
         if not url.startswith('http'): url = 'https://google.com'
             
         type_icon = escape_markdown_v2(item.get('type', '🔹'))
-        msg += f"{i+1}\. {type_icon} *{title}*\n{summary}\n📎 [{source}]({url})\n\n"
+        msg += f"{i+1}\\. {type_icon} *{title}*\n{summary}\n📎 [{source}]({url})\n\n"
         
     msg += "━━━━━━━━━━━━━━━━━━━━\n🤖 _Tech News by VJ_"
     return msg
