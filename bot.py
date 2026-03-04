@@ -417,6 +417,10 @@ def send_whatsapp_message(message):
         print("❌ WhatsApp config missing. Skipping.")
         return False
 
+    # Meta strictly requires no '+', spaces, or dashes in the recipient number
+    clean_recipient = WHATSAPP_RECIPIENT.replace('+', '').replace('-', '').replace(' ', '').strip()
+    template_name = os.getenv('WHATSAPP_TEMPLATE_NAME')
+
     url = f"https://graph.facebook.com/v22.0/{WHATSAPP_PHONE_ID}/messages"
     headers = {'Authorization': f'Bearer {WHATSAPP_TOKEN}', 'Content-Type': 'application/json'}
 
@@ -437,23 +441,49 @@ def send_whatsapp_message(message):
 
     success = True
     for i, msg_part in enumerate(messages):
+        # Default payload (Text mode - requires 24h interaction)
         payload = {
             "messaging_product": "whatsapp",
             "recipient_type": "individual",
-            "to": WHATSAPP_RECIPIENT,
+            "to": clean_recipient,
             "type": "text",
             "text": {
                 "body": msg_part,
                 "preview_url": False
             }
         }
+        
+        # Override with Template Mode if specified in .env
+        if template_name:
+            payload = {
+                "messaging_product": "whatsapp",
+                "to": clean_recipient,
+                "type": "template",
+                "template": {
+                    "name": template_name,
+                    "language": {"code": "en_US"},
+                    "components": [{
+                        "type": "body",
+                        "parameters": [{"type": "text", "text": msg_part[:1024]}] # FB Templates limit vars to 1024 chars
+                    }]
+                }
+            }
+
         try:
             r = requests.post(url, headers=headers, json=payload, timeout=20)
             if r.status_code in [200, 201]:
-                print(f"✅ WhatsApp part {i+1}/{len(messages)} sent")
+                print(f"✅ WhatsApp part {i+1}/{len(messages)} sent via {'Template' if template_name else 'Text'}")
             else:
+                resp_json = r.json()
+                err_code = resp_json.get('error', {}).get('code')
+                
                 print(f"❌ WhatsApp Send Failed: {r.status_code} - {r.text}")
-                print("⚠️ Note: WhatsApp Cloud API requires a 24-hour interaction window for 'text' replies. Use message templates to bypass.")
+                
+                if err_code == 131047:
+                    print("\n⚠️ ISSUE: The 24-hour session window has closed.")
+                    print("   To fix:")
+                    print("   1. Send any message from your phone TO the bot's WhatsApp number to re-open the window.")
+                    print("   2. OR create an approved template in Meta Developer Console, and set WHATSAPP_TEMPLATE_NAME in your .env file.\n")
                 success = False
         except Exception as e:
             print(f"⚠️ WhatsApp Error: {e}")
