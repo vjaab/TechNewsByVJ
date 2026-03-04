@@ -4,6 +4,8 @@ import sys
 import time
 import json
 import re
+import random
+import sqlite3
 import requests
 import schedule
 import feedparser
@@ -27,7 +29,7 @@ WHATSAPP_TOKEN = os.getenv('WHATSAPP_ACCESS_TOKEN')
 WHATSAPP_PHONE_ID = os.getenv('WHATSAPP_PHONE_NUMBER_ID')
 WHATSAPP_RECIPIENT = os.getenv('WHATSAPP_RECIPIENT_PHONE_NUMBER')
 
-SEEN_URLS_FILE = "seen_urls.json"
+DB_FILE = "seen_urls.db"
 
 # News Sources
 RSS_FEEDS = [
@@ -55,84 +57,106 @@ REDDIT_SUBREDDITS = [
     "singularity" 
 ]
 
-def load_seen_urls():
-    if os.path.exists(SEEN_URLS_FILE):
+USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/114.0'
+]
+
+# --- Database Setup (SQLite replacing JSON) ---
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS seen_urls 
+                 (url TEXT PRIMARY KEY, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)''')
+    conn.commit()
+    conn.close()
+
+def is_url_seen(url):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT 1 FROM seen_urls WHERE url = ?", (url,))
+    result = c.fetchone()
+    conn.close()
+    return result is not None
+
+def save_seen_urls(new_urls):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    for url in new_urls:
         try:
-            with open(SEEN_URLS_FILE, "r") as f:
-                return json.load(f)
-        except Exception:
-            return []
-    return []
+            c.execute("INSERT OR IGNORE INTO seen_urls (url) VALUES (?)", (url,))
+        except Exception as e:
+            print(f"⚠️ DB Insert Error: {e}")
+    
+    # Auto-cleanup: keep only URLs from the last 60 days
+    c.execute("DELETE FROM seen_urls WHERE timestamp < datetime('now', '-60 days')")
+    conn.commit()
+    conn.close()
 
-def save_seen_urls(seen_urls, new_urls):
-    # Keep last 30 days worth of URLs (approx 300 items)
-    # Combine and deduplicate
-    all_urls = list(set(seen_urls + new_urls))
-    # Keep last 300
-    updated = all_urls[-300:]
-    try:
-        with open(SEEN_URLS_FILE, "w") as f:
-            json.dump(updated, f)
-    except Exception as e:
-        print(f"⚠️ Error saving seen_urls: {e}")
-
-def extract_urls_from_data(data):
-    """Extracts URLs directly from the data dictionary."""
-    if not data or 'items' not in data:
-        return []
-    return [item.get('url') for item in data['items'] if item.get('url')]
-
+# --- Helper Functions ---
 def clean_html(html_content):
-    """Removes HTML tags from summary text."""
     if not html_content:
         return ""
     soup = BeautifulSoup(html_content, "html.parser")
-    return soup.get_text()[:300] + "..."
+    return soup.get_text()[:400] + "..."
+
+def fetch_deep_article_content(url):
+    """Visits the actual URL to grab real paragraph text for a better LLM summary."""
+    try:
+        headers = {'User-Agent': random.choice(USER_AGENTS)}
+        r = requests.get(url, headers=headers, timeout=5)
+        if r.status_code == 200:
+            soup = BeautifulSoup(r.content, 'html.parser')
+            # Extract text from paragraphs
+            paragraphs = soup.find_all('p')
+            text = " ".join([p.get_text(strip=True) for p in paragraphs if len(p.get_text(strip=True)) > 20])
+            return text[:1000] # Return the first 1000 characters
+    except Exception:
+        pass
+    return ""
 
 def is_within_24_hours(published_date_str):
-    """Checks if the published date string is within the last 24 hours."""
     if not published_date_str:
-        return True # Default to True if no date, or handle appropriately
-        
+         return True
     try:
-        # Parse the date string using dateutil for robust parsing
         pub_date = date_parser.parse(published_date_str)
-        
-        # Ensure pub_date is timezone-aware if possible, or naive if system is naive
-        # Standardize to UTC for comparison if possible
         if pub_date.tzinfo is None:
              pub_date = pytz.utc.localize(pub_date)
-        
         now = datetime.now(pytz.utc)
-        
-        # Calculate difference
-        diff = now - pub_date
-        return diff < timedelta(hours=24)
-    except Exception as e:
-        # print(f"Date parsing error: {e}")
-        return True # Fallback
+        return (now - pub_date) < timedelta(hours=24)
+    except Exception:
+        return True
 
+# --- Fetching Logic ---
 def fetch_rss_news():
-    """Fetches news from defined RSS feeds."""
     news_items = []
     print("📡 Fetching RSS feeds...")
     for feed_url in RSS_FEEDS:
         try:
             feed = feedparser.parse(feed_url)
-            # Fetch all items (limit 20 per feed to avoid overload, but more than 5)
-            for entry in feed.entries[:30]:
+            for entry in feed.entries[:25]:
                 published = getattr(entry, 'published', getattr(entry, 'updated', None))
-                
-                # Check if within 24 hours
                 if published and not is_within_24_hours(published):
                     continue
-                    
+                
+                url = entry.link
+                if is_url_seen(url):
+                    continue
+
+                rss_summary = clean_html(getattr(entry, 'summary', ''))
+                # Fetch deeper content if summary is too short (teaser problem)
+                deep_content = ""
+                if len(rss_summary) < 150:
+                    deep_content = fetch_deep_article_content(url)
+
                 is_research = "research" in feed_url or "blog" in feed_url
                 news_items.append({
                     "title": entry.title,
-                    "summary": clean_html(getattr(entry, 'summary', '')),
+                    "summary": deep_content if deep_content else rss_summary,
                     "source": feed.feed.get('title', 'Unknown Source'),
-                    "url": entry.link,
+                    "url": url,
                     "published_at": published or datetime.now().isoformat(),
                     "type": "research" if is_research else "news"
                 })
@@ -141,140 +165,107 @@ def fetch_rss_news():
     return news_items
 
 def fetch_reddit_news():
-    """Fetches top daily posts from Reddit via RSS (No API Key needed)."""
     news_items = []
     print("👽 Fetching Reddit top posts...")
-    headers = {'User-Agent': 'Mozilla/5.0 (compatible; GMBot/1.0)'}
     
     for sub in REDDIT_SUBREDDITS:
         url = f"https://www.reddit.com/r/{sub}/top/.rss?t=day&limit=10"
+        headers = {'User-Agent': random.choice(USER_AGENTS)}
         try:
             response = requests.get(url, headers=headers, timeout=10)
             if response.status_code == 200:
                 feed = feedparser.parse(response.content)
-                # Fetch all items
-                for entry in feed.entries[:20]:
+                for entry in feed.entries[:15]:
                     published = getattr(entry, 'updated', None)
-                    
-                    # Check if within 24 hours
                     if published and not is_within_24_hours(published):
                         continue
+                        
+                    post_url = entry.link
+                    if is_url_seen(post_url):
+                        continue
+
+                    # Attempt to extract some actual text from Reddit if possible
+                    deep_content = fetch_deep_article_content(post_url)
                         
                     is_research = sub in ["MachineLearning", "LocalLLaMA", "singularity"]
                     news_items.append({
                         "title": entry.title,
-                        "summary": "Reddit Discussion",
+                        "summary": deep_content if deep_content else "Reddit Discussion",
                         "source": f"r/{sub}",
-                        "url": entry.link,
+                        "url": post_url,
                         "published_at": published or datetime.now().isoformat(),
                         "type": "research" if is_research else "news"
                     })
             else:
                 print(f"⚠️ Reddit Error {response.status_code} for r/{sub}")
+            
+            # Prevent rate limiting (Error 429)
+            time.sleep(2)
         except Exception as e:
             print(f"⚠️ Error fetching r/{sub}: {e}")
             
     return news_items
 
 def escape_markdown_v2(text):
-    """Escapes characters for Telegram MarkdownV2."""
     if not text: return ""
-    # Characters to escape: _ * [ ] ( ) ~ ` > # + - = | { } . !
     return re.sub(r'([_*\[\]()~`>#+\-=|{}.!])', r'\\\1', text)
 
-
-
-
-def generate_digest(news_items, mode, seen_urls=None):
-    """Uses Gemini to generate the Telegram message via JSON."""
-    if seen_urls is None:
-        seen_urls = []
-        
+# --- AI Generation ---
+def generate_digest(news_items, mode):
     if not GEMINI_API_KEY:
         print("❌ Error: GEMINI_API_KEY is not set.")
         return None
 
-    print(f"🤖 Generating digest for {len(news_items)} items in '{mode}' mode using Gemini...")
+    print(f"🤖 Generating digest for {len(news_items)} fresh items in '{mode}' mode using Gemini Native JSON...")
     
     try:
         client = genai.Client(api_key=GEMINI_API_KEY)
-        
         ist = pytz.timezone('Asia/Kolkata')
         today_str = datetime.now(ist).strftime("%B %d, %Y")
         
-        input_data = {
-            "items": news_items,
-            "seen_urls": seen_urls
-        }
-        
         system_instruction = f"""
         You are Tech News by VJ, an AI-powered daily tech news curator for @technewsbyvj.
-        Today is {today_str}.
-        Current Mode: {mode.upper()}
+        Today is {today_str}. Current Mode: {mode.upper()}
         """
 
         task_instruction = f"""
         INPUT DATA:
-        {json.dumps(input_data, indent=2)}
+        {json.dumps({"items": news_items}, indent=2)}
         
         TASK:
-        Select the best items to create a curated tech digest in JSON format for the '{mode}' category.
-        
-        CRITICAL RULES:
-        1. DUPLICATE PREVENTION: 
-           - 'seen_urls' contains previously posted URLs. NEVER select any item found in this list.
-           - Check closely for duplicate topics/stories even if URLs differ.
+        Select the best 5-10 items to create a highly curated tech digest.
+        All provided input items are fresh and unseen.
         """
 
         if mode == 'research':
             task_instruction += """
-        2. RESEARCH SELECTION (Priority: Arxiv, HuggingFace, DeepMind, OpenAI):
-           - Select ALL high-quality, relevant items found. DO NOT limit to 5.
-           - STRICTLY DEDUPLICATE: If multiple feeds cover the same paper/topic, keep only the best one.
-           - Exclude GitHub PRs/commits/issues/changelogs.
-           - Exclude simple code releases without major significance.
-           - Include: Recent papers (~7 days), AI concepts, strong engineering blogs.
-           - ONLY return items with type="research" or relevant to research.
+        RESEARCH PRIORITY (Arxiv, HuggingFace, DeepMind, OpenAI):
+        - Focus heavily on new models, training techniques, and genuine AI breakthroughs.
+        - Exclude minor github commits or trivial code drops.
+        - Only select items with type="research" or heavily related to AI research.
             """
         elif mode == 'news':
             task_instruction += """
-        2. NEWS SELECTION (Priority: TechCrunch, Verge, Wired, VentureBeat):
-           - Select ALL relevant, significant news items. DO NOT limit to 5.
-           - STRICTLY DEDUPLICATE: If multiple feeds cover the same story, choose the ONE best source.
-           - Focus on: Product launches, Funding, Policy, Major moves.
-           - Avoid: Clickbait, duplicate topics.
-           - ONLY return items with type="news" or relevant to tech news.
+        NEWS PRIORITY (TechCrunch, Verge, VC, Corporate):
+        - Focus on product launches, massive funding rounds, policy changes, and major corporate shifts.
+        - Only select items with type="news" or related to tech industry movements.
             """
-        else: # mixed/all
-             task_instruction += """
-        2. SELECTION MIX:
-           - Select ALL relevant Research AND News items. Provide a comprehensive digest.
-             """
 
         task_instruction += """
-        3. CONTENT STYLE:
-           - Titles: Clean, unformatted text.
-           - Summaries: Plain text, factual, neutral tone, <25 words.
-           - Sources: Clean name (e.g., "TechCrunch", "Arxiv").
-           - Diversity: Max 2 items from any single source. Maximum of 2 items TOTAL from all Reddit sources combined.
+        CONTENT STYLE:
+        - Summaries must be extremely concise (strictly under 25 words), factual, and punchy.
+        - Source names should be clean (e.g., 'Ars Technica' not 'Ars Technica Feed').
+        - Diversity: Max 2 links per source. Max 2 links from Reddit total.
         
-        4. AI CONCEPTS TO COVER (if applicable):
-           - MoE, SSM, Mamba, Transformers++
-           - RLHF, DPO, LoRA, RAG
-           - Agents (CoT, ToT), Multimodal
-        
-        OUTPUT FORMAT:
-        Return valid JSON only. Do NOT output Markdown.
-        
-        JSON SCHEMA:
+        JSON SCHEMA REQUIRED:
         {
           "items": [
             {
-              "type": "📄" or "🧠" (for research) / "🔹" (for news),
-              "title": "Title String",
-              "summary": "Summary String",
-              "source": "Source Name",
-              "url": "URL"
+              "type": "📄",
+              "title": "Cleaned Headline String",
+              "summary": "25-word punchy summary string",
+              "source": "Clean Source Name",
+              "url": "Exact URL provided"
             }
           ]
         }
@@ -285,64 +276,57 @@ def generate_digest(news_items, mode, seen_urls=None):
         response = None
         for attempt in range(3):
             try:
+                # Guaranteed JSON Generation using the response_mime_type config
                 response = client.models.generate_content(
                     model='gemini-2.0-flash',
-                    contents=prompt
+                    contents=prompt,
+                    config=genai.types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        temperature=0.3
+                    )
                 )
                 break
             except Exception as e:
-                # Catch 429 specifically
                 if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
                     if attempt < 2:
                         wait_time = (attempt + 1) * 20
                         print(f"⚠️ Quota exceeded (429). Retrying in {wait_time}s...")
                         time.sleep(wait_time)
                     else:
-                        print("❌ Max retries for Gemini API reached.")
                         raise e
                 else:
                     raise e
                     
         if not response:
              return None
-        
-        # Parse JSON
-        raw_text = response.text.replace('```json', '').replace('```', '').strip()
-        data = json.loads(raw_text)
-        
+             
+        data = json.loads(response.text)
         return data
         
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         print(f"⚠️ Gemini Generation/Parsing Error: {e}")
         return None
 
+# --- Output Formatting & Sending ---
 def format_telegram_digest(data, mode):
-    """Formats JSON data into Telegram MarkdownV2 string."""
     ist = pytz.timezone('Asia/Kolkata')
     today_str = datetime.now(ist).strftime("%B %d, %Y")
     now_hour = datetime.now(ist).hour
     
     header_date = escape_markdown_v2(today_str)
-    
     greeting = "🌅 *GM*" if now_hour < 12 else "☕ *Good Afternoon*"
     
-    topic_header = ""
-    if mode == 'research':
-        topic_header = "🔬 *RESEARCH & AI PAPERS*"
-    elif mode == 'news':
-        topic_header = "📰 *TECH NEWS & UPDATES*"
-    else:
-        topic_header = "🗞️ *TECH DIGEST*"
+    topic_header = "🗞️ *TECH DIGEST*"
+    if mode == 'research': topic_header = "🔬 *RESEARCH & AI PAPERS*"
+    elif mode == 'news': topic_header = "📰 *TECH NEWS & UPDATES*"
 
     msg = f"{greeting} — {topic_header}\n{header_date}\n\n"
     
     items = data.get('items', [])
     if not items:
-         # Fallback for old schema if model hallucinates old structure
-         items = data.get('research', []) + data.get('news', [])
-
-    if not items:
-        msg += "_(No updates found at this time)_\n\n"
+        msg += "_(No massive updates found at this time)_\n\n"
         
     for i, item in enumerate(items):
         title = escape_markdown_v2(item.get('title', 'Untitled'))
@@ -351,37 +335,28 @@ def format_telegram_digest(data, mode):
         url = item.get('url', '')
         if not url.startswith('http'): url = 'https://google.com'
             
-        type_icon = item.get('type', '🔹')
-        
+        type_icon = escape_markdown_v2(item.get('type', '🔹'))
         msg += f"{i+1}\. {type_icon} *{title}*\n{summary}\n📎 [{source}]({url})\n\n"
         
     msg += "━━━━━━━━━━━━━━━━━━━━\n🤖 _Tech News by VJ_"
     return msg
 
 def format_whatsapp_digest(data, mode):
-    """Formats JSON data into WhatsApp Markdown string."""
     ist = pytz.timezone('Asia/Kolkata')
     today_str = datetime.now(ist).strftime("%B %d, %Y")
     now_hour = datetime.now(ist).hour
     
     greeting = "🌅 *GM*" if now_hour < 12 else "☕ *Good Afternoon*"
     
-    topic_header = ""
-    if mode == 'research':
-        topic_header = "🔬 *RESEARCH & AI PAPERS*"
-    elif mode == 'news':
-        topic_header = "📰 *TECH NEWS & UPDATES*"
-    else:
-        topic_header = "🗞️ *TECH DIGEST*"
+    topic_header = "🗞️ *TECH DIGEST*"
+    if mode == 'research': topic_header = "🔬 *RESEARCH & AI PAPERS*"
+    elif mode == 'news': topic_header = "📰 *TECH NEWS & UPDATES*"
 
     msg = f"{greeting} — {topic_header}\n{today_str}\n\n"
     
     items = data.get('items', [])
     if not items:
-         items = data.get('research', []) + data.get('news', [])
-
-    if not items:
-        msg += "_(No updates found at this time)_\n\n"
+        msg += "_(No massive updates found at this time)_\n\n"
         
     for i, item in enumerate(items):
         title = item.get('title', 'Untitled').replace('*', '')
@@ -391,24 +366,19 @@ def format_whatsapp_digest(data, mode):
         if not url.startswith('http'): url = 'https://google.com'
             
         type_icon = item.get('type', '🔹')
-        
         msg += f"{i+1}. {type_icon} *{title}*\n{summary}\n📎 {source}: {url}\n\n"
         
     msg += "━━━━━━━━━━━━━━━━━━━━\n🤖 _Tech News by VJ_"
     return msg
 
 def send_telegram_message(message):
-    """Sends the formatted message to Telegram, splitting if necessary."""
     if not BOT_TOKEN or not CHAT_ID:
         print("❌ Telegram config missing.")
         return False
 
-    # Split message if too long
     max_length = 4000
     messages = []
     if len(message) > max_length:
-        print(f"⚠️ Message length {len(message)} exceeds limit. Splitting...")
-        # Simple split by double newline to keep items together
         parts = message.split('\n\n')
         current_chunk = ""
         for part in parts:
@@ -417,15 +387,12 @@ def send_telegram_message(message):
                  current_chunk = part + "\n\n"
              else:
                  current_chunk += part + "\n\n"
-        if current_chunk:
-            messages.append(current_chunk)
+        if current_chunk: messages.append(current_chunk)
     else:
         messages = [message]
 
     success = True
     for i, msg in enumerate(messages):
-        if not msg.strip(): continue
-        
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         payload = {
             'chat_id': CHAT_ID,
@@ -433,38 +400,29 @@ def send_telegram_message(message):
             'parse_mode': 'MarkdownV2',
             'disable_web_page_preview': True
         }
-        
         try:
-            response = requests.post(url, json=payload, timeout=20)
-            if response.status_code == 200:
-                print(f"✅ Message part {i+1}/{len(messages)} sent successfully")
+            r = requests.post(url, json=payload, timeout=20)
+            if r.status_code == 200:
+                print(f"✅ Telegram part {i+1}/{len(messages)} sent")
             else:
-                print(f"❌ Telegram Send Failed for part {i+1}: {response.text}")
+                print(f"❌ Telegram Send Failed: {r.text}")
                 success = False
-                
         except Exception as e:
-            print(f"⚠️ Telegram Connection Error: {e}")
+            print(f"⚠️ Telegram Error: {e}")
             success = False
-            
     return success
 
 def send_whatsapp_message(message):
-    """Sends the formatted message to WhatsApp via Facebook Graph API."""
     if not WHATSAPP_TOKEN or not WHATSAPP_PHONE_ID or not WHATSAPP_RECIPIENT:
-        print("❌ WhatsApp config missing. Skipping WhatsApp send.")
+        print("❌ WhatsApp config missing. Skipping.")
         return False
 
     url = f"https://graph.facebook.com/v22.0/{WHATSAPP_PHONE_ID}/messages"
-    headers = {
-        'Authorization': f'Bearer {WHATSAPP_TOKEN}',
-        'Content-Type': 'application/json'
-    }
+    headers = {'Authorization': f'Bearer {WHATSAPP_TOKEN}', 'Content-Type': 'application/json'}
 
-    # WhatsApp has a character limit ~4096. Splitting logic similar to Telegram.
     messages = []
     max_length = 4000
     if len(message) > max_length:
-        print(f"⚠️ WhatsApp Message length {len(message)} exceeds limit. Splitting...")
         parts = message.split('\n\n')
         current_chunk = ""
         for part in parts:
@@ -473,8 +431,7 @@ def send_whatsapp_message(message):
                  current_chunk = part + "\n\n"
              else:
                  current_chunk += part + "\n\n"
-        if current_chunk:
-            messages.append(current_chunk)
+        if current_chunk: messages.append(current_chunk)
     else:
         messages = [message]
 
@@ -490,49 +447,46 @@ def send_whatsapp_message(message):
                 "preview_url": False
             }
         }
-        
         try:
-            response = requests.post(url, headers=headers, json=payload, timeout=20)
-            if response.status_code in [200, 201]:
-                print(f"✅ WhatsApp message part {i+1}/{len(messages)} sent successfully")
+            r = requests.post(url, headers=headers, json=payload, timeout=20)
+            if r.status_code in [200, 201]:
+                print(f"✅ WhatsApp part {i+1}/{len(messages)} sent")
             else:
-                print(f"❌ WhatsApp Send Failed: {response.status_code} - {response.text}")
+                print(f"❌ WhatsApp Send Failed: {r.status_code} - {r.text}")
+                print("⚠️ Note: WhatsApp Cloud API requires a 24-hour interaction window for 'text' replies. Use message templates to bypass.")
                 success = False
         except Exception as e:
-            print(f"⚠️ WhatsApp Connection Error: {e}")
+            print(f"⚠️ WhatsApp Error: {e}")
             success = False
-            
     return success
 
+# --- Main Job Logic ---
 def job(mode='all'):
     print(f"⏰ Starting scheduled job ({mode}) at {datetime.now()}...")
+    init_db()
+    
     all_news = fetch_rss_news() + fetch_reddit_news()
     
     if not all_news:
         print("⚠️ No news found! Check connections.")
         return
 
-    # Filter based on mode if needed, though LLM handles it best, 
-    # pre-filtering saves tokens and reduces noise.
     if mode == 'research':
         all_news = [n for n in all_news if n.get('type') == 'research']
     elif mode == 'news':
         all_news = [n for n in all_news if n.get('type') == 'news']
     
     if not all_news:
-         print(f"⚠️ No items found for mode '{mode}'.")
+         print(f"⚠️ No fresh items found for mode '{mode}'.")
          return
 
-    # Sort by date (newest first) to prioritize fresh content
     all_news.sort(key=lambda x: x.get('published_at', ''), reverse=True)
     
-    # Limit to top 60 items to prevent Token Limit Exceeded / 429 Errors
-    if len(all_news) > 60:
-        print(f"⚠️ Truncating input from {len(all_news)} to 60 items to save quota.")
-        all_news = all_news[:60]
+    # Cap input context to prevent token overload
+    if len(all_news) > 80:
+        all_news = all_news[:80]
 
-    seen_urls = load_seen_urls()
-    digest_data = generate_digest(all_news, mode, seen_urls)
+    digest_data = generate_digest(all_news, mode)
     
     if digest_data:
         # 1. Telegram
@@ -544,9 +498,9 @@ def job(mode='all'):
         wa_success = send_whatsapp_message(wa_message)
 
         if tg_success or wa_success:
-             new_urls = extract_urls_from_data(digest_data)
-             save_seen_urls(seen_urls, new_urls)
-             print(f"📝 Saved {len(new_urls)} new URLs to history.")
+             new_urls = [item.get('url') for item in digest_data.get('items', []) if item.get('url')]
+             save_seen_urls(new_urls)
+             print(f"📝 Saved {len(new_urls)} dispatched URLs to SQLite database.")
     else:
         print("⚠️ Failed to generate digest.")
 
@@ -559,24 +513,19 @@ if __name__ == "__main__":
     if not GEMINI_API_KEY:
         print("🚨 WARNING: GEMINI_API_KEY is missing.")
     if not BOT_TOKEN:
-         print("🚨 WARNING: TELEGRAM_BOT_TOKEN is missing.")
+        print("🚨 WARNING: TELEGRAM_BOT_TOKEN is missing.")
 
     if os.getenv('GITHUB_ACTIONS'):
         print(f"🚀 Running in GitHub Actions mode ({args.mode})")
         job(args.mode)
         sys.exit(0)
 
-    print(f"🤖 GM Bot Online. Monitoring... (Press Ctrl+C to stop)")
-    # For local testing without args, it runs 'all'
-    # To schedule specifically locally, you'd need to adjust this loop or run via cron
-    
-    # Simple local schedule simulation for testing
-    # schedule.every().day.at("09:00").do(job, mode='research')
-    # schedule.every().day.at("14:00").do(job, mode='news')
+    print(f"🤖 Tech News by VJ Bot Online. Monitoring... (Press Ctrl+C to stop)")
+    init_db()
     
     try:
         if args.mode != 'all':
-             job(args.mode) # Run once if mode is specified manually
+             job(args.mode)
              sys.exit(0)
              
         while True:
