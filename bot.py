@@ -278,7 +278,7 @@ def generate_digest(news_items, mode):
             try:
                 # Guaranteed JSON Generation using the response_mime_type config
                 response = client.models.generate_content(
-                    model='gemini-2.0-flash',
+                    model='gemini-2.0-pro',
                     contents=prompt,
                     config=genai.types.GenerateContentConfig(
                         response_mime_type="application/json",
