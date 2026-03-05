@@ -10,7 +10,7 @@ import requests
 import schedule
 import feedparser
 import pytz
-import google.generativeai as genai
+import google.genai as genai
 from datetime import datetime, timedelta
 from dateutil import parser as date_parser
 from bs4 import BeautifulSoup
@@ -219,8 +219,7 @@ def generate_digest(news_items, mode):
     print(f"🤖 Generating digest for {len(news_items)} fresh items in '{mode}' mode using Gemini Native JSON...")
     
     try:
-        genai.configure(api_key=GEMINI_API_KEY)
-        model_name = 'gemini-1.5-pro'
+        client = genai.Client(api_key=GEMINI_API_KEY)
         ist = pytz.timezone('Asia/Kolkata')
         today_str = datetime.now(ist).strftime("%B %d, %Y")
         
@@ -277,11 +276,10 @@ def generate_digest(news_items, mode):
         response = None
         for attempt in range(3):
             try:
-                model = genai.GenerativeModel(model_name)
-                # Guaranteed JSON Generation using the fast legacy API wrapper structure
-                response = model.generate_content(
-                    prompt,
-                    generation_config=dict(
+                response = client.models.generate_content(
+                    model='gemini-2.5-flash',
+                    contents=prompt,
+                    config=genai.types.GenerateContentConfig(
                         response_mime_type="application/json",
                         temperature=0.3
                     )
@@ -290,13 +288,9 @@ def generate_digest(news_items, mode):
             except Exception as e:
                 err_str = str(e)
                 if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "Quota" in err_str:
-                    if attempt == 0:
-                        print(f"⚠️ Quota exceeded for {model_name} (429). Falling back to gemini-2.0-flash...")
-                        model_name = 'gemini-2.0-flash'
-                        time.sleep(2)
-                    elif attempt < 2:
+                    if attempt < 2:
                         wait_time = (attempt + 1) * 20
-                        print(f"⚠️ Quota exceeded on fallback (429). Retrying in {wait_time}s...")
+                        print(f"⚠️ Quota exceeded (429). Retrying in {wait_time}s...")
                         time.sleep(wait_time)
                     else:
                         raise e
