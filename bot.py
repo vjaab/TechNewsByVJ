@@ -220,7 +220,7 @@ def generate_digest(news_items, mode):
     
     try:
         genai.configure(api_key=GEMINI_API_KEY)
-        model_name = 'gemini-2.0-pro'
+        model_name = 'gemini-1.5-pro'
         ist = pytz.timezone('Asia/Kolkata')
         today_str = datetime.now(ist).strftime("%B %d, %Y")
         
