@@ -28,6 +28,7 @@ GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 WHATSAPP_TOKEN = os.getenv('WHATSAPP_ACCESS_TOKEN')
 WHATSAPP_PHONE_ID = os.getenv('WHATSAPP_PHONE_NUMBER_ID')
 WHATSAPP_RECIPIENT = os.getenv('WHATSAPP_RECIPIENT_PHONE_NUMBER')
+WHATSAPP_CHANNEL_URL = os.getenv('WHATSAPP_CHANNEL_URL', 'https://whatsapp.com/channel/0029Vb75sw08vd1GsBm3RD1Z')
 
 DB_FILE = "seen_urls.db"
 
@@ -371,7 +372,7 @@ def format_whatsapp_digest(data, mode):
     msg += "━━━━━━━━━━━━━━━━━━━━\n🤖 _Tech News by VJ_"
     return msg
 
-def send_telegram_message(message):
+def send_telegram_message(message, reply_markup=None):
     if not BOT_TOKEN or not CHAT_ID:
         print("❌ Telegram config missing.")
         return False
@@ -400,12 +401,17 @@ def send_telegram_message(message):
             'parse_mode': 'MarkdownV2',
             'disable_web_page_preview': True
         }
+        
+        # Only add markup to the last part (or the only part)
+        if i == len(messages) - 1 and reply_markup:
+            payload['reply_markup'] = reply_markup
+
         try:
             r = requests.post(url, json=payload, timeout=20)
             if r.status_code == 200:
                 print(f"✅ Telegram part {i+1}/{len(messages)} sent")
             else:
-                print(f"❌ Telegram Send Failed: {r.text}")
+                print(f"❌ Telegram Send Failed: {r.status_code} - {r.text}")
                 success = False
         except Exception as e:
             print(f"⚠️ Telegram Error: {e}")
@@ -424,18 +430,23 @@ def send_whatsapp_message(message):
     url = f"https://graph.facebook.com/v22.0/{WHATSAPP_PHONE_ID}/messages"
     headers = {'Authorization': f'Bearer {WHATSAPP_TOKEN}', 'Content-Type': 'application/json'}
 
+    # WhatsApp allows 4000 chars for free-form text, but Meta templates strictly limit variables to 1024 chars.
+    limit = 1024 if template_name else 4000
+    
     messages = []
-    max_length = 4000
-    if len(message) > max_length:
+    if len(message) > limit:
+        # Split by items (denoted by \n\n)
         parts = message.split('\n\n')
         current_chunk = ""
         for part in parts:
-             if len(current_chunk) + len(part) + 2 > max_length:
-                 messages.append(current_chunk)
+             if len(current_chunk) + len(part) + 2 > limit:
+                 if current_chunk:
+                     messages.append(current_chunk.strip())
                  current_chunk = part + "\n\n"
              else:
                  current_chunk += part + "\n\n"
-        if current_chunk: messages.append(current_chunk)
+        if current_chunk:
+            messages.append(current_chunk.strip())
     else:
         messages = [message]
 
@@ -521,9 +532,24 @@ def job(mode='all'):
     if digest_data:
         # 1. Telegram
         tg_message = format_telegram_digest(digest_data, mode)
-        tg_success = send_telegram_message(tg_message)
         
-        # 2. WhatsApp
+        # Create a WhatsApp Share link that pre-fills the message for easier forwarding
+        import urllib.parse
+        clean_wa_text = format_whatsapp_digest(digest_data, mode)
+        encoded_text = urllib.parse.quote(clean_wa_text)
+        wa_share_url = f"https://api.whatsapp.com/send?text={encoded_text}"
+
+        # Create Forwarding Markup
+        markup = {
+            "inline_keyboard": [
+                [{"text": "🚀 Prepare WhatsApp Post", "url": wa_share_url}],
+                [{"text": "📢 Open Channel", "url": WHATSAPP_CHANNEL_URL}]
+            ]
+        }
+
+        tg_success = send_telegram_message(tg_message, reply_markup=markup)
+        
+        # 2. WhatsApp (Direct Publish)
         wa_message = format_whatsapp_digest(digest_data, mode)
         wa_success = send_whatsapp_message(wa_message)
 
